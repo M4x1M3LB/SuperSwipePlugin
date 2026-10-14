@@ -19,6 +19,7 @@ import {
   fractionInside,
   lineCutsStroke,
   padAndClamp,
+  strokesTouch,
   unionBoxes,
   type Box,
   type Pt,
@@ -229,7 +230,7 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   if (blocked) {
     return blocked;
   }
-  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
+  if (!(await deleteVerified(ctx, [stroke]))) {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
 
@@ -247,34 +248,91 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
 
 async function eraseAlongLine(ctx: Context, line: Segment): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
-  const cut: PageElement[] = [];
+  const strokes: {element: PageElement; outline: Pt[]}[] = [];
   for (const element of ctx.others) {
-    if (element.type !== STROKE) {
-      continue;
-    }
-    const outline = await element.outline();
-    if (lineCutsStroke(outline, line, config.eraseMinCutRatio)) {
-      cut.push(element);
+    if (element.type === STROKE) {
+      strokes.push({element, outline: await element.outline()});
     }
   }
+  const cut = strokes.filter(s =>
+    lineCutsStroke(s.outline, line, config.eraseMinCutRatio),
+  );
   ctx.trace(`cut: ${cut.length} stroke(s)`);
   if (cut.length < config.eraseMinCrossed) {
     // An underline, a divider, a crossed-out letter: leave the ink alone.
     return {kind: 'ignored', reason: `line cuts ${cut.length} strokes`};
   }
 
+  // The rest of each word: strokes that cross or touch a cut stroke.
+  const erase = new Set(cut);
+  if (config.eraseTouching) {
+    for (const s of strokes) {
+      if (
+        !erase.has(s) &&
+        cut.some(c =>
+          strokesTouch(s.outline, c.outline, config.eraseTouchTolerance),
+        )
+      ) {
+        erase.add(s);
+      }
+    }
+    ctx.trace(`touching: ${erase.size - cut.length} more stroke(s)`);
+  }
+  const erased = [...erase].map(s => s.element);
+
   const blocked = await checkBeforeEdit(ctx);
   if (blocked) {
     return blocked;
   }
-  const nums = [...cut, stroke].map(e => e.numInPage);
-  if (!(await host.deleteElements(nums, page, stroke.layerNum))) {
+  if (!(await deleteVerified(ctx, [...erased, stroke]))) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
-  host.rememberErased(path, page, stroke.layerNum, cut);
+  host.rememberErased(path, page, stroke.layerNum, erased);
   // Deleting without a lasso does not repaint the page.
   await host.refreshPage();
-  return {kind: 'erased', count: cut.length};
+  return {kind: 'erased', count: erased.length};
+}
+
+/**
+ * Delete page elements, newest first so removing one never shifts the
+ * numbers of the others, then re-read the page and delete again whatever
+ * is still there (matched by point count and first point, as numbers may
+ * have changed).
+ */
+async function deleteVerified(
+  ctx: Context,
+  targets: PageElement[],
+): Promise<boolean> {
+  const {host, path, page, stroke} = ctx;
+  const signature = async (e: PageElement) => {
+    const pts = await e.outline();
+    return `${pts.length}@${fmt(pts[0])}`;
+  };
+  const wanted = new Set(await Promise.all(targets.map(signature)));
+  const descending = (els: PageElement[]) =>
+    els.map(e => e.numInPage).sort((a, b) => b - a);
+
+  if (
+    !(await host.deleteElements(descending(targets), page, stroke.layerNum))
+  ) {
+    return false;
+  }
+  const after = await host.getPageElements(path, page);
+  const left: PageElement[] = [];
+  for (const e of after) {
+    if (
+      e.type === STROKE &&
+      e.layerNum === stroke.layerNum &&
+      wanted.has(await signature(e))
+    ) {
+      left.push(e);
+    }
+  }
+  if (left.length === 0) {
+    return true;
+  }
+  ctx.trace(`still on page after delete: ${left.length}, deleting again`);
+  return host.deleteElements(descending(left), page, stroke.layerNum);
 }
 
 /** Last checks before the page is modified; returns why not to, if any. */

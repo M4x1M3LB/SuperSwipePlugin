@@ -3,6 +3,7 @@ import {
   findClosedLoop,
   findStraightLine,
   lineCutsStroke,
+  strokesTouch,
   fractionInside,
   padAndClamp,
   pointInPolygon,
@@ -190,5 +191,37 @@ describe('lineCutsStroke', () => {
   it('ignores strokes the line does not reach', () => {
     const short = {a: {x: 0, y: 120}, b: {x: 150, y: 120}};
     expect(lineCutsStroke(letter, short, 0.2)).toBe(false);
+  });
+});
+
+describe('strokesTouch', () => {
+  const stem: Pt[] = [
+    {x: 100, y: 100},
+    {x: 100, y: 160},
+  ];
+
+  it('detects strokes that cross', () => {
+    const bar = [
+      {x: 80, y: 120},
+      {x: 120, y: 120},
+    ];
+    expect(strokesTouch(stem, bar, 4)).toBe(true);
+  });
+
+  it('detects strokes that meet within the tolerance', () => {
+    const joined = [
+      {x: 103, y: 160},
+      {x: 130, y: 140},
+    ];
+    expect(strokesTouch(stem, joined, 4)).toBe(true);
+  });
+
+  it('ignores strokes further apart than the tolerance', () => {
+    const dot = [
+      {x: 100, y: 85},
+      {x: 101, y: 86},
+    ];
+    expect(strokesTouch(stem, dot, 4)).toBe(false);
+    expect(strokesTouch(stem, [], 4)).toBe(false);
   });
 });

@@ -59,6 +59,9 @@ function fakeHost(
   page: PageElement[],
   overrides: Partial<Host> = {},
 ): FakeHost {
+  // Behaves like the device is suspected to: elements are removed one at a
+  // time in the order given, and the page is renumbered after each removal.
+  let current = [...page];
   const host: FakeHost = {
     deleted: [],
     lassoed: [],
@@ -67,11 +70,23 @@ function fakeHost(
     getCurrentFilePath: async () => '/storage/emulated/0/Note/demo.note',
     getCurrentPageNum: async () => 3,
     getPageSize: async () => ({width: 1404, height: 1872}),
-    getPageElements: async () => page,
+    getPageElements: async () => current,
     ensureFileAccess: async () => true,
     waitForPenUp: async () => {},
     deleteElements: async nums => {
       host.deleted.push(nums);
+      for (const num of nums) {
+        const target = current.find(e => e.numInPage === num);
+        if (!target) {
+          continue;
+        }
+        current = current.filter(e => e !== target);
+        current.forEach(e => {
+          if (e.numInPage > num) {
+            e.numInPage--;
+          }
+        });
+      }
       return true;
     },
     rememberErased: (_path, _page, _layer, elements) => {
@@ -232,11 +247,12 @@ describe('handlePenUp', () => {
       waitForPenUp: async () => {
         order.push('wait');
       },
-      deleteElements: async () => {
-        order.push('delete');
-        return true;
-      },
     });
+    const realDelete = host.deleteElements;
+    host.deleteElements = (nums, page, layer) => {
+      order.push('delete');
+      return realDelete(nums, page, layer);
+    };
     await handlePenUp([loop], host, DEFAULT_CONFIG);
     expect(order).toEqual(['wait', 'delete']);
   });
@@ -268,8 +284,8 @@ describe('handlePenUp: device quirks', () => {
       pageNum: undefined as unknown as number,
     });
     const stored = el(points, {numInPage: 9});
-    const getPageElements = jest.fn(async () => [el(word(480, 500)), stored]);
-    const host = fakeHost([], {getPageElements});
+    const host = fakeHost([el(word(480, 500)), stored]);
+    const getPageElements = jest.spyOn(host, 'getPageElements');
 
     expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toMatchObject({
       kind: 'selected',
@@ -366,11 +382,77 @@ describe('handlePenUp: line to erase', () => {
     const outcome = await handlePenUp([line], host, DEFAULT_CONFIG);
 
     expect(outcome).toEqual({kind: 'erased', count: 4});
-    expect(host.deleted).toEqual([
-      [...letters.map(e => e.numInPage), line.numInPage],
-    ]);
+    // Newest first, so no removal shifts the numbers of the others.
+    expect(host.deleted).toEqual([[6, 4, 3, 2, 1]]);
+    expect(await host.getPageElements('', 3)).toEqual([other]);
     expect(host.remembered).toEqual([letters]);
     expect(host.refreshed).toBe(1);
+  });
+
+  it('erases the rest of each word: strokes crossing or touching a cut one', async () => {
+    const letters = row();
+    // A "t" bar above the line, crossing the first letter but not cut.
+    const bar = el(straight({x: 95, y: 505}, {x: 135, y: 505}, 8));
+    // A connector that starts 2 px from the end of the last letter.
+    const tail = el([
+      {x: 252, y: 502},
+      {x: 262, y: 490},
+      {x: 272, y: 480},
+    ]);
+    // An "i" dot 15 px above the row: not touching, so it stays.
+    const dot = el([
+      {x: 150, y: 485},
+      {x: 151, y: 486},
+    ]);
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const host = fakeHost([...letters, bar, tail, dot, line]);
+    const lines: string[] = [];
+
+    const outcome = await handlePenUp([line], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+
+    expect(outcome).toEqual({kind: 'erased', count: 6});
+    expect(lines).toContain('touching: 2 more stroke(s)');
+    expect(await host.getPageElements('', 3)).toEqual([dot]);
+  });
+
+  it('only erases cut strokes when touching is turned off', async () => {
+    const letters = row();
+    const bar = el(straight({x: 95, y: 505}, {x: 135, y: 505}, 8));
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const host = fakeHost([...letters, bar, line]);
+
+    const outcome = await handlePenUp([line], host, {
+      ...DEFAULT_CONFIG,
+      eraseTouching: false,
+    });
+
+    expect(outcome).toEqual({kind: 'erased', count: 4});
+    expect(await host.getPageElements('', 3)).toEqual([bar]);
+  });
+
+  it('deletes again what the first delete left on the page', async () => {
+    const letters = row();
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const host = fakeHost([...letters, line]);
+    const realDelete = host.deleteElements;
+    let calls = 0;
+    host.deleteElements = async (nums, page, layer) => {
+      calls++;
+      // First call: the device silently skips the newest element (the line).
+      return realDelete(calls === 1 ? nums.slice(1) : nums, page, layer);
+    };
+    const lines: string[] = [];
+
+    const outcome = await handlePenUp([line], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+
+    expect(outcome).toMatchObject({kind: 'erased'});
+    expect(calls).toBe(2);
+    expect(lines).toContain('still on page after delete: 1, deleting again');
+    expect(await host.getPageElements('', 3)).toEqual([]);
   });
 
   it('leaves the line as ink when it cuts fewer than 3 strokes', async () => {

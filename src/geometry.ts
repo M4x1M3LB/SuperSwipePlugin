@@ -326,3 +326,67 @@ export function lineCutsStroke(
   const extent = above + below;
   return extent > 0 && Math.min(above, below) >= minCutRatio * extent;
 }
+
+function overlapsWithin(a: Box, b: Box, margin: number): boolean {
+  return (
+    a.left - margin <= b.right &&
+    b.left - margin <= a.right &&
+    a.top - margin <= b.bottom &&
+    b.top - margin <= a.bottom
+  );
+}
+
+/** Squared distance from `p` to the segment a-b. */
+function distanceToSegmentSq(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t =
+    lengthSq === 0
+      ? 0
+      : Math.max(
+          0,
+          Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq),
+        );
+  const x = a.x + t * dx - p.x;
+  const y = a.y + t * dy - p.y;
+  return x * x + y * y;
+}
+
+/** Is any point of `a` within `tolerance` px of the path of `b`? */
+function reaches(a: Pt[], b: Pt[], toleranceSq: number): boolean {
+  for (const p of a) {
+    if (b.length === 1 && distanceToSegmentSq(p, b[0], b[0]) <= toleranceSq) {
+      return true;
+    }
+    for (let i = 1; i < b.length; i++) {
+      if (distanceToSegmentSq(p, b[i - 1], b[i]) <= toleranceSq) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Do two strokes cross or touch? They touch when their paths come within
+ * `tolerance` px of each other (handwritten strokes that meet rarely cross
+ * exactly).
+ */
+export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
+  if (a.length === 0 || b.length === 0) {
+    return false;
+  }
+  if (!overlapsWithin(boundingBox(a), boundingBox(b), tolerance)) {
+    return false;
+  }
+  for (let i = 1; i < a.length; i++) {
+    for (let j = 1; j < b.length; j++) {
+      if (segmentsIntersect(a[i - 1], a[i], b[j - 1], b[j])) {
+        return true;
+      }
+    }
+  }
+  const toleranceSq = tolerance * tolerance;
+  return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
+}

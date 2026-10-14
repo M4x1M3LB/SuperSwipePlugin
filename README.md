@@ -6,7 +6,8 @@ A Supernote plugin for NOTE files, with two pen gestures:
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
 - **Line to erase:** draw a straight line through 3 or more strokes and the
-  line and every stroke it cut through are erased.
+  line, every stroke it cut through, and the strokes touching those are
+  erased.
 
 Built with the official plugin framework (React Native 0.79.2,
 `sn-plugin-lib` 0.2.3) following https://docs.supernote.com/en.
@@ -41,6 +42,10 @@ Line to erase:
   clips the tails of "g", "y" or "p" does not erase them.
 - Fewer than 3 crossed strokes: the line stays on the page as ink
   (dividers, crossing out a single letter).
+- The rest of each word goes too: every stroke that crosses or touches
+  (within 4 px) a cut stroke is erased, e.g. the bar of a "t" or joined-up
+  letters. Strokes that do not touch the cut ones, like the dot of an "i" or
+  a separate letter above or below the line, stay.
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
 - **Restore last erase** on the plugin screen puts the last erased strokes
   back (same note; the plugin keeps them until the next erase).

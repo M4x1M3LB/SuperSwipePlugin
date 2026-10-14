@@ -17,6 +17,13 @@ export interface SelectorConfig {
    */
   eraseMinCutRatio: number;
   /**
+   * Also erase strokes that cross or touch a cut stroke (the rest of the
+   * word: a "t" bar, connected letters).
+   */
+  eraseTouching: boolean;
+  /** Strokes closer than this, in px, count as touching. */
+  eraseTouchTolerance: number;
+  /**
    * Pen types whose strokes may trigger a selection. The SDK documents
    * 10 (fineliner/technical), 16 (pressure), 15 (calligraphy); 1 is an older
    * ink pen id seen on devices. Marker (11) is left out on purpose: circling
@@ -40,6 +47,8 @@ export const DEFAULT_CONFIG: SelectorConfig = {
   line: DEFAULT_LINE_OPTIONS,
   eraseMinCrossed: 3,
   eraseMinCutRatio: 0.2,
+  eraseTouching: true,
+  eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],
   minInsideFraction: 0.85,
   lassoPadding: 4,
