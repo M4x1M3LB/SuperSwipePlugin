@@ -1,9 +1,9 @@
 {
   "name": "SuperSwipe",
-  "desc": "Pen gestures for notes: draw a loop around strokes to lasso-select them, or a straight line through words to erase them.",
+  "desc": "Pen gestures for notes: draw a loop around strokes to lasso-select them, or a \u2715 in the margin to erase a line of writing.",
   "iconPath": "assets/icon.png",
-  "versionName": "0.0.7",
-  "versionCode": "7",
+  "versionName": "0.0.8",
+  "versionCode": "8",
   "pluginID": "nkq4x2u5m7xt50fr",
   "pluginKey": "SuperSwipe",
   "jsMainPath": "index",

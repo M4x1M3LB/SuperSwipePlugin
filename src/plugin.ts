@@ -1,7 +1,7 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
 import {createHost, PenTracker, type DeviceHost} from './host';
-import {handlePenUp, type Outcome} from './selector';
+import {handlePenUp, type Outcome, type PreviousStroke} from './selector';
 import {status} from './status';
 
 let host: DeviceHost | null = null;
@@ -17,13 +17,15 @@ export function startGestures(): void {
   // pause them once the plugin view has been shown), so a stroke that is
   // still busy after the time limit is abandoned when the next one arrives.
   let busy: {since: number; abandon: () => void} | null = null;
+  // The last ink stroke, for the two-stroke margin ✕.
+  let previous: PreviousStroke | null = null;
 
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
       status.countPenUp();
       const gestures = status.gestures();
       if (
-        (!gestures.loopSelect && !gestures.lineErase) ||
+        (!gestures.loopSelect && !gestures.marginErase) ||
         !Array.isArray(msg)
       ) {
         return;
@@ -52,8 +54,15 @@ export function startGestures(): void {
       device.setTrace(trace);
 
       const elements = device.wrap(msg as Element[]);
+      const before = previous;
+      const now = Date.now();
       handlePenUp(elements, device, DEFAULT_CONFIG, {
         gestures,
+        previous: before,
+        now,
+        remember: points => {
+          previous = {points, at: now};
+        },
         isCancelled: () => abandoned,
         trace,
       })
@@ -66,6 +75,10 @@ export function startGestures(): void {
         .then(outcome => {
           if (busy !== current) {
             return; // abandoned; a newer stroke owns the host now
+          }
+          if (outcome.kind !== 'ignored') {
+            // Its strokes are gone or selected: never pair them again.
+            previous = null;
           }
           status.setLast(outcome, lines);
           device.release();

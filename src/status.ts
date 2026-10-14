@@ -6,7 +6,7 @@ import type {Gestures, Outcome} from './selector';
  */
 type Listener = () => void;
 
-let gestures: Gestures = {loopSelect: true, lineErase: true};
+let gestures: Gestures = {loopSelect: true, marginErase: true};
 let lastOutcome: Outcome | null = null;
 let lastTrace: string[] = [];
 let penUpCount = 0;

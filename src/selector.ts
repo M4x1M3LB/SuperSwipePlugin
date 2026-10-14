@@ -3,8 +3,8 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Line to erase: a straight line that cuts through enough strokes is
- *   removed together with every stroke it cut through.
+ * - Margin ✕ to erase: a small ✕ (two strokes) in the margin, level with a
+ *   line of writing, erases that line and the ✕.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -15,16 +15,15 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   findClosedLoop,
-  findStraightLine,
+  findCrossMark,
+  findWritingLine,
   fractionInside,
   growPolygon,
-  lineCutsStroke,
   padAndClamp,
   strokesTouch,
   unionBoxes,
   type Box,
   type Pt,
-  type Segment,
 } from './geometry';
 
 export interface PageElement {
@@ -81,7 +80,7 @@ export interface Host {
 
 export interface Gestures {
   loopSelect: boolean;
-  lineErase: boolean;
+  marginErase: boolean;
 }
 
 export type Outcome =
@@ -106,8 +105,21 @@ interface Context {
   trace: (line: string) => void;
 }
 
+/** The ink stroke before this one, as delivered on pen-up. */
+export interface PreviousStroke {
+  points: Pt[];
+  /** When it was received, in ms (Date.now()). */
+  at: number;
+}
+
 export interface HandleOptions {
   gestures?: Gestures;
+  /** The previous ink stroke, for two-stroke gestures (the margin ✕). */
+  previous?: PreviousStroke | null;
+  /** Current time in ms; defaults to Date.now(). */
+  now?: number;
+  /** Receives this stroke's pen-up points, to pass back as `previous`. */
+  remember?: (points: Pt[]) => void;
   /** Checked right before the page is modified. */
   isCancelled?: () => boolean;
   /** Receives one line per decision, shown on the plugin screen. */
@@ -120,7 +132,8 @@ export async function handlePenUp(
   config: SelectorConfig,
   options: HandleOptions = {},
 ): Promise<Outcome> {
-  const gestures = options.gestures ?? {loopSelect: true, lineErase: true};
+  const gestures = options.gestures ?? {loopSelect: true, marginErase: true};
+  const now = options.now ?? Date.now();
   const isCancelled = options.isCancelled ?? (() => false);
   const trace = options.trace ?? (() => {});
 
@@ -139,18 +152,24 @@ export async function handlePenUp(
   }
 
   const points = await gesture.outline();
+  options.remember?.(points);
   trace(`stroke: pen ${gesture.penType}, ${points.length} points`);
   const polygon = gestures.loopSelect
     ? findClosedLoop(points, config.loop)
     : null;
-  const line =
-    !polygon && gestures.lineErase
-      ? findStraightLine(points, config.line)
-      : null;
-  if (!polygon && !line) {
+  // Shape only, on the pen-up copies: nothing is read from (or saved to) the
+  // page unless this stroke and the previous one form a ✕.
+  const previous = options.previous;
+  const isMark =
+    !polygon &&
+    gestures.marginErase &&
+    !!previous &&
+    now - previous.at <= config.markMaxDelayMs &&
+    findCrossMark(previous.points, points, config.mark, false) !== null;
+  if (!polygon && !isMark) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: straight line');
+  trace(polygon ? 'shape: closed loop' : 'shape: ✕ mark');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -169,7 +188,7 @@ export async function handlePenUp(
   trace(`page elements: ${elements.length}`);
   const stroke = await findStoredStroke(
     elements,
-    gesture,
+    gesture.uuid,
     points.length,
     trace,
   );
@@ -196,11 +215,33 @@ export async function handlePenUp(
     }
     return selectInLoop(ctx, pagePolygon);
   }
-  const pageLine = findStraightLine(stored, config.line);
-  if (!pageLine) {
-    return {kind: 'failed', reason: 'line not recognised in page copy'};
+
+  // The ✕'s first stroke: the newest other stroke with its point count.
+  const first = await findStoredStroke(
+    others,
+    null,
+    previous!.points.length,
+    trace,
+  );
+  if (!first) {
+    return {kind: 'failed', reason: 'first stroke of the ✕ not found'};
   }
-  return eraseAlongLine(ctx, pageLine);
+  const firstPoints = await first.outline();
+  const mark = findCrossMark(firstPoints, stored, config.mark);
+  if (!mark) {
+    return {kind: 'ignored', reason: '✕ not recognised in page copy'};
+  }
+  trace(
+    `✕ mark: #${first.numInPage} + #${stroke.numInPage}, ` +
+      `${Math.round(mark.right - mark.left)}×${Math.round(
+        mark.bottom - mark.top,
+      )} px`,
+  );
+  return eraseNextToMark(
+    {...ctx, others: others.filter(e => e !== first)},
+    first,
+    mark,
+  );
 }
 
 function fmt(p: Pt | undefined): string {
@@ -254,45 +295,57 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   return {kind: 'selected', count: boxes.length, rect};
 }
 
-async function eraseAlongLine(ctx: Context, line: Segment): Promise<Outcome> {
+/**
+ * Erase the line of writing to the right of a margin ✕, the strokes touching
+ * it (a "t" bar, a descender), and the ✕.
+ */
+async function eraseNextToMark(
+  ctx: Context,
+  first: PageElement,
+  mark: Box,
+): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
-  const strokes: {element: PageElement; outline: Pt[]}[] = [];
+  const strokes: {element: PageElement; outline: Pt[]; box: Box}[] = [];
   for (const element of ctx.others) {
     if (element.type === STROKE) {
-      strokes.push({element, outline: await element.outline()});
-    }
-  }
-  const cut = strokes.filter(s =>
-    lineCutsStroke(s.outline, line, config.eraseMinCutRatio),
-  );
-  ctx.trace(`cut: ${cut.length} stroke(s)`);
-  if (cut.length < config.eraseMinCrossed) {
-    // An underline, a divider, a crossed-out letter: leave the ink alone.
-    return {kind: 'ignored', reason: `line cuts ${cut.length} strokes`};
-  }
-
-  // The rest of each word: strokes that cross or touch a cut stroke.
-  const erase = new Set(cut);
-  if (config.eraseTouching) {
-    for (const s of strokes) {
-      if (
-        !erase.has(s) &&
-        cut.some(c =>
-          strokesTouch(s.outline, c.outline, config.eraseTouchTolerance),
-        )
-      ) {
-        erase.add(s);
+      const outline = await element.outline();
+      if (outline.length > 0) {
+        strokes.push({element, outline, box: boundingBox(outline)});
       }
     }
-    ctx.trace(`touching: ${erase.size - cut.length} more stroke(s)`);
   }
+  const line = findWritingLine(
+    mark,
+    strokes.map(s => s.box),
+    config.writingLine,
+  );
+  if ('reason' in line) {
+    // A written "x", or a cross drawn as content: leave the ink alone.
+    return {kind: 'ignored', reason: line.reason};
+  }
+  const row = line.indices.map(i => strokes[i]);
+  ctx.trace(`line of writing: ${row.length} stroke(s)`);
+
+  // Strokes touching the line: a "t" bar, a descender, connected letters.
+  const erase = new Set(row);
+  for (const s of strokes) {
+    if (
+      !erase.has(s) &&
+      row.some(r =>
+        strokesTouch(s.outline, r.outline, config.eraseTouchTolerance),
+      )
+    ) {
+      erase.add(s);
+    }
+  }
+  ctx.trace(`touching: ${erase.size - row.length} more stroke(s)`);
   const erased = [...erase].map(s => s.element);
 
   const blocked = await checkBeforeEdit(ctx);
   if (blocked) {
     return blocked;
   }
-  if (!(await deleteVerified(ctx, [...erased, stroke]))) {
+  if (!(await deleteVerified(ctx, [...erased, first, stroke]))) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   host.rememberErased(path, page, stroke.layerNum, erased);
@@ -373,13 +426,11 @@ const RECENT_STROKES = 10;
  */
 async function findStoredStroke(
   elements: PageElement[],
-  gesture: PageElement,
+  uuid: string | null,
   pointCount: number,
   trace: (line: string) => void,
 ): Promise<PageElement | null> {
-  const byUuid = elements.find(
-    e => e.uuid === gesture.uuid && e.numInPage >= 1,
-  );
+  const byUuid = elements.find(e => e.uuid === uuid && e.numInPage >= 1);
   if (byUuid) {
     return byUuid;
   }

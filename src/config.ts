@@ -1,33 +1,27 @@
 import {
-  DEFAULT_LINE_OPTIONS,
   DEFAULT_LOOP_OPTIONS,
-  type LineOptions,
+  DEFAULT_MARK_OPTIONS,
+  DEFAULT_WRITING_LINE_OPTIONS,
   type LoopOptions,
+  type MarkOptions,
+  type WritingLineOptions,
 } from './geometry';
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  line: LineOptions;
-  /** A straight line erases only when it cuts through at least this many strokes. */
-  eraseMinCrossed: number;
-  /**
-   * Fraction of a stroke's extent (across the line) that must lie on each
-   * side of the line for it to count as cut through. Protects underlines
-   * that clip descenders.
-   */
-  eraseMinCutRatio: number;
-  /**
-   * Also erase strokes that cross or touch a cut stroke (the rest of the
-   * word: a "t" bar, connected letters).
-   */
-  eraseTouching: boolean;
+  /** The margin ✕: two short straight strokes crossing near their middles. */
+  mark: MarkOptions;
+  /** Max time between the two strokes of the ✕, in ms. */
+  markMaxDelayMs: number;
+  /** Which strokes form the line of writing next to the ✕. */
+  writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
   eraseTouchTolerance: number;
   /**
    * Pen types whose strokes may trigger a selection. The SDK documents
    * 10 (fineliner/technical), 16 (pressure), 15 (calligraphy); 1 is an older
    * ink pen id seen on devices. Marker (11) is left out on purpose: circling
-   * with the highlighter is almost always emphasis, not a selection.
+   * or crossing with the highlighter is almost always emphasis.
    * Lasso-tool paths also arrive on pen-up with penType 4 and must never
    * match.
    */
@@ -46,10 +40,9 @@ export interface SelectorConfig {
 
 export const DEFAULT_CONFIG: SelectorConfig = {
   loop: DEFAULT_LOOP_OPTIONS,
-  line: DEFAULT_LINE_OPTIONS,
-  eraseMinCrossed: 3,
-  eraseMinCutRatio: 0.2,
-  eraseTouching: true,
+  mark: DEFAULT_MARK_OPTIONS,
+  markMaxDelayMs: 2000,
+  writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],
   minInsideFraction: 0.5,

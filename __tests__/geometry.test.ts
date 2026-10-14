@@ -1,8 +1,8 @@
 import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
-  findStraightLine,
-  lineCutsStroke,
+  findCrossMark,
+  findWritingLine,
   strokesTouch,
   fractionInside,
   padAndClamp,
@@ -139,68 +139,104 @@ describe('polygon helpers', () => {
   });
 });
 
-describe('findStraightLine', () => {
-  it('accepts a slightly wobbly straight stroke', () => {
-    const pts = line({x: 100, y: 500}, {x: 500, y: 520}).map((p, i) => ({
-      x: p.x,
-      y: p.y + (i % 2 ? 2 : -2),
-    }));
-    expect(findStraightLine(pts)).toEqual({a: pts[0], b: pts[pts.length - 1]});
+/** One stroke of a ✕, from `a` to `b`, with a little hand wobble. */
+function bar(a: Pt, b: Pt, n = 12): Pt[] {
+  return Array.from({length: n + 1}, (_, i) => ({
+    x: a.x + ((b.x - a.x) * i) / n + (i % 2 ? 0.8 : -0.8),
+    y: a.y + ((b.y - a.y) * i) / n,
+  }));
+}
+
+describe('findCrossMark', () => {
+  // A 40 px ✕ centred on (60, 520).
+  const down = bar({x: 40, y: 500}, {x: 80, y: 540});
+  const up = bar({x: 40, y: 540}, {x: 80, y: 500});
+
+  it('recognises a ✕ and returns its box', () => {
+    expect(findCrossMark(down, up)).toEqual({
+      left: 39.2,
+      top: 500,
+      right: 79.2,
+      bottom: 540,
+    });
   });
 
-  it('accepts vertical and diagonal lines', () => {
-    expect(
-      findStraightLine(line({x: 300, y: 100}, {x: 300, y: 600})),
-    ).not.toBeNull();
-    expect(
-      findStraightLine(line({x: 100, y: 100}, {x: 400, y: 400})),
-    ).not.toBeNull();
+  it('recognises a "+" too (any two strokes crossing at a clear angle)', () => {
+    const h = bar({x: 40, y: 520}, {x: 80, y: 520});
+    const v = bar({x: 60, y: 500}, {x: 60, y: 540});
+    expect(findCrossMark(h, v)).not.toBeNull();
   });
 
-  it('accepts a densely sampled line with jitter', () => {
-    const pts = line({x: 100, y: 500}, {x: 500, y: 500}, 400).map((p, i) => ({
-      x: p.x,
-      y: p.y + (i % 2 ? 1.5 : -1.5),
-    }));
-    expect(findStraightLine(pts)).not.toBeNull();
+  it('rejects strokes that meet at their ends (a "v", an "L")', () => {
+    const v1 = bar({x: 40, y: 500}, {x: 60, y: 540});
+    const v2 = bar({x: 60, y: 540}, {x: 80, y: 500});
+    expect(findCrossMark(v1, v2)).toBeNull();
   });
 
-  it('rejects short strokes', () => {
+  it('rejects strokes that do not cross, or nearly parallel ones', () => {
     expect(
-      findStraightLine(line({x: 100, y: 100}, {x: 160, y: 100})),
+      findCrossMark(down, bar({x: 140, y: 540}, {x: 180, y: 500})),
+    ).toBeNull();
+    expect(
+      findCrossMark(down, bar({x: 42, y: 498}, {x: 78, y: 542})),
     ).toBeNull();
   });
 
-  it('rejects curves and corners', () => {
-    expect(findStraightLine(ellipse(500, 500, 200, 120, 0.4))).toBeNull();
-    const corner = [
-      ...line({x: 100, y: 100}, {x: 400, y: 100}),
-      ...line({x: 400, y: 100}, {x: 400, y: 400}),
-    ];
-    expect(findStraightLine(corner)).toBeNull();
+  it('rejects curved strokes, and strokes too long or too unequal', () => {
+    expect(findCrossMark(ellipse(60, 520, 20, 20, 0.5, 12), up)).toBeNull();
+    const long = bar({x: 0, y: 300}, {x: 400, y: 700});
+    const longUp = bar({x: 0, y: 700}, {x: 400, y: 300});
+    expect(findCrossMark(long, longUp)).toBeNull();
+    const tiny = bar({x: 55, y: 525}, {x: 65, y: 515});
+    expect(findCrossMark(long, tiny)).toBeNull();
+  });
+
+  it('checks only the shape when asked (any scale or rotation)', () => {
+    const scale = (pts: Pt[]) =>
+      pts.map(p => ({x: 9000 - p.y * 10, y: p.x * 10}));
+    expect(
+      findCrossMark(scale(down), scale(up), undefined, false),
+    ).not.toBeNull();
+    expect(findCrossMark(scale(down), scale(up))).toBeNull(); // too big as px
   });
 });
 
-describe('lineCutsStroke', () => {
-  const strike = {a: {x: 0, y: 120}, b: {x: 1000, y: 120}};
-  // A letter-like zig-zag from y=100 to y=140.
-  const letter: Pt[] = [0, 1, 2, 3, 4].map(i => ({
-    x: 200 + i * 6,
-    y: i % 2 ? 140 : 100,
-  }));
-
-  it('counts a line through the middle of a stroke', () => {
-    expect(lineCutsStroke(letter, strike, 0.2)).toBe(true);
+describe('findWritingLine', () => {
+  const mark = {left: 40, top: 500, right: 80, bottom: 540};
+  const box = (left: number, top: number, w = 30, h = 40) => ({
+    left,
+    top,
+    right: left + w,
+    bottom: top + h,
   });
 
-  it('ignores a line that only clips the bottom of a stroke', () => {
-    const underline = {a: {x: 0, y: 137}, b: {x: 1000, y: 137}};
-    expect(lineCutsStroke(letter, underline, 0.2)).toBe(false);
+  it('takes the strokes level with the mark, on its right', () => {
+    const boxes = [
+      box(100, 500), // level
+      box(140, 505), // level
+      box(400, 495), // level, far right: same line
+      box(100, 580), // next line down
+      box(100, 420), // line above
+    ];
+    expect(findWritingLine(mark, boxes)).toEqual({indices: [0, 1, 2]});
   });
 
-  it('ignores strokes the line does not reach', () => {
-    const short = {a: {x: 0, y: 120}, b: {x: 150, y: 120}};
-    expect(lineCutsStroke(letter, short, 0.2)).toBe(false);
+  it('refuses when there is writing on the left of the mark', () => {
+    expect(findWritingLine(mark, [box(0, 500, 20), box(100, 500)])).toEqual({
+      reason: 'writing on the left of the mark',
+    });
+  });
+
+  it('refuses a mark touching the writing (a written "x")', () => {
+    expect(findWritingLine(mark, [box(84, 500)])).toEqual({
+      reason: 'mark touches the writing',
+    });
+  });
+
+  it('refuses a mark with nothing next to it', () => {
+    expect(findWritingLine(mark, [box(100, 700)])).toEqual({
+      reason: 'no writing next to the mark',
+    });
   });
 });
 
@@ -211,11 +247,11 @@ describe('strokesTouch', () => {
   ];
 
   it('detects strokes that cross', () => {
-    const bar = [
+    const tBar = [
       {x: 80, y: 120},
       {x: 120, y: 120},
     ];
-    expect(strokesTouch(stem, bar, 4)).toBe(true);
+    expect(strokesTouch(stem, tBar, 4)).toBe(true);
   });
 
   it('detects strokes that meet within the tolerance', () => {

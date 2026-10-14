@@ -255,12 +255,13 @@ export interface LineOptions {
   maxDeviationRatio: number;
 }
 
-export const DEFAULT_LINE_OPTIONS: LineOptions = {
-  minPoints: 6,
-  minLength: 100,
-  maxPathRatio: 1.15,
-  maxDeviationPx: 12,
-  maxDeviationRatio: 0.05,
+/** Each stroke of a margin ✕: short and roughly straight. */
+export const MARK_STROKE_OPTIONS: LineOptions = {
+  minPoints: 3,
+  minLength: 15,
+  maxPathRatio: 1.3,
+  maxDeviationPx: 6,
+  maxDeviationRatio: 0.15,
 };
 
 export interface Segment {
@@ -289,7 +290,7 @@ function thin(points: Pt[], step: number): Pt[] {
 /** Return the stroke's end-to-end segment if it is a straight line. */
 export function findStraightLine(
   points: Pt[],
-  options: LineOptions = DEFAULT_LINE_OPTIONS,
+  options: LineOptions,
 ): Segment | null {
   if (points.length < options.minPoints) {
     return null;
@@ -329,35 +330,6 @@ export function segmentsIntersect(p1: Pt, p2: Pt, q1: Pt, q2: Pt): boolean {
     ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
     ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
   );
-}
-
-/**
- * Does `line` cut through the stroke? The line must cross the stroke's path,
- * and at least `minCutRatio` of the stroke's extent (measured across the
- * line) must lie on each side. That way an underline that only clips the
- * tails of "g", "y" or "p" does not count.
- */
-export function lineCutsStroke(
-  stroke: Pt[],
-  line: Segment,
-  minCutRatio: number,
-): boolean {
-  let crosses = false;
-  for (let i = 1; i < stroke.length && !crosses; i++) {
-    crosses = segmentsIntersect(stroke[i - 1], stroke[i], line.a, line.b);
-  }
-  if (!crosses) {
-    return false;
-  }
-  let above = 0;
-  let below = 0;
-  for (const p of stroke) {
-    const d = signedDistance(p, line);
-    above = Math.max(above, d);
-    below = Math.max(below, -d);
-  }
-  const extent = above + below;
-  return extent > 0 && Math.min(above, below) >= minCutRatio * extent;
 }
 
 function overlapsWithin(a: Box, b: Box, margin: number): boolean {
@@ -422,4 +394,137 @@ export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
   }
   const toleranceSq = tolerance * tolerance;
   return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
+}
+
+export interface MarkOptions {
+  /** Each stroke must be roughly straight, at least `minLength` px long. */
+  stroke: LineOptions;
+  /** Longest allowed stroke, in px. */
+  maxLength: number;
+  /** Smallest angle between the two strokes, in degrees. */
+  minAngle: number;
+  /**
+   * The strokes must cross away from their ends: the crossing point lies in
+   * the middle part of each, leaving `crossMargin` of its length on each side.
+   */
+  crossMargin: number;
+  /** Longest stroke divided by the shortest one. */
+  maxLengthRatio: number;
+}
+
+export const DEFAULT_MARK_OPTIONS: MarkOptions = {
+  stroke: MARK_STROKE_OPTIONS,
+  maxLength: 200,
+  minAngle: 45,
+  crossMargin: 0.15,
+  maxLengthRatio: 2.5,
+};
+
+/**
+ * Do two strokes form a ✕? Returns its bounding box if so.
+ *
+ * With `checkSize` false only the shape is checked (straight strokes crossing
+ * near their middles at a clear angle), which works in any coordinate system
+ * or scale: used on the pen-up copies before anything is read from the page.
+ */
+export function findCrossMark(
+  first: Pt[],
+  second: Pt[],
+  options: MarkOptions = DEFAULT_MARK_OPTIONS,
+  checkSize = true,
+): Box | null {
+  const lineOptions = checkSize
+    ? options.stroke
+    : {...options.stroke, minLength: 0, maxDeviationPx: 0};
+  const a = findStraightLine(first, lineOptions);
+  const b = findStraightLine(second, lineOptions);
+  if (!a || !b) {
+    return null;
+  }
+  const la = distance(a.a, a.b);
+  const lb = distance(b.a, b.b);
+  if (la === 0 || lb === 0) {
+    return null;
+  }
+  if (checkSize && Math.max(la, lb) > options.maxLength) {
+    return null;
+  }
+  if (Math.max(la, lb) / Math.min(la, lb) > options.maxLengthRatio) {
+    return null;
+  }
+  const cos =
+    Math.abs(
+      (a.b.x - a.a.x) * (b.b.x - b.a.x) + (a.b.y - a.a.y) * (b.b.y - b.a.y),
+    ) /
+    (la * lb);
+  if ((Math.acos(Math.min(1, cos)) * 180) / Math.PI < options.minAngle) {
+    return null;
+  }
+  // Intersection as a fraction along each stroke.
+  const d =
+    (a.b.x - a.a.x) * (b.b.y - b.a.y) - (a.b.y - a.a.y) * (b.b.x - b.a.x);
+  const t =
+    ((b.a.x - a.a.x) * (b.b.y - b.a.y) - (b.a.y - a.a.y) * (b.b.x - b.a.x)) / d;
+  const u =
+    ((b.a.x - a.a.x) * (a.b.y - a.a.y) - (b.a.y - a.a.y) * (a.b.x - a.a.x)) / d;
+  const m = options.crossMargin;
+  if (t < m || t > 1 - m || u < m || u > 1 - m) {
+    return null;
+  }
+  return unionBoxes([boundingBox(first), boundingBox(second)]);
+}
+
+export interface WritingLineOptions {
+  /**
+   * Strokes belong to the line next to the mark when their vertical centre
+   * is within this many mark heights of the mark's centre...
+   */
+  bandScale: number;
+  /** ...and at least this many px, for a small mark. */
+  minBandHalf: number;
+  /** Minimum gap between the mark and the writing, in px. */
+  minGap: number;
+}
+
+export const DEFAULT_WRITING_LINE_OPTIONS: WritingLineOptions = {
+  bandScale: 0.9,
+  minBandHalf: 30,
+  minGap: 10,
+};
+
+/**
+ * The line of writing to the right of a margin mark: indices of the boxes
+ * whose vertical centre is level with the mark. Refused (with the reason)
+ * when there is writing level with the mark on its left or under it, which
+ * means the mark is part of the text (a written "x"), not in the margin.
+ */
+export function findWritingLine(
+  mark: Box,
+  boxes: Box[],
+  options: WritingLineOptions = DEFAULT_WRITING_LINE_OPTIONS,
+): {indices: number[]} | {reason: string} {
+  const centre = (mark.top + mark.bottom) / 2;
+  const half = Math.max(
+    options.minBandHalf,
+    options.bandScale * (mark.bottom - mark.top),
+  );
+  const indices: number[] = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (Math.abs((b.top + b.bottom) / 2 - centre) > half) {
+      continue;
+    }
+    if (b.left < mark.right + options.minGap) {
+      return {
+        reason:
+          b.right <= mark.left
+            ? 'writing on the left of the mark'
+            : 'mark touches the writing',
+      };
+    }
+    indices.push(i);
+  }
+  return indices.length > 0
+    ? {indices}
+    : {reason: 'no writing next to the mark'};
 }
