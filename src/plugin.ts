@@ -67,6 +67,7 @@ export function startGestures(): void {
           if (busy !== current) {
             return; // abandoned; a newer stroke owns the host now
           }
+          trace(`took ${Date.now() - current.since} ms`);
           status.setLast(outcome, lines);
           device.release();
           busy = null;

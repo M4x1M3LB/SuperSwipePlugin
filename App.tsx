@@ -64,7 +64,7 @@ function App(): React.JSX.Element {
 
       <Toggle label="Loop to select" name="loopSelect" />
       <Toggle label="Margin wave to erase" name="marginErase" />
-      <Toggle label="Refresh screen after a gesture" name="screenRefresh" />
+      <Toggle label="Refresh screen after an erase" name="screenRefresh" />
 
       <View style={styles.row}>
         <Pressable style={styles.button} onPress={restore}>

@@ -142,42 +142,19 @@ describe('handlePenUp', () => {
     expect(host.deleted).toEqual([]);
   });
 
-  it('refreshes the screen (reload) after removing the loop, before selecting', async () => {
+  it('selects right after removing the loop: no check, no reload', async () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop]);
+    let reads = 0;
+    const read = host.getPageElements;
+    host.getPageElements = (...args) => {
+      reads++;
+      return read(...args);
+    };
 
     await handlePenUp([loop], host, DEFAULT_CONFIG);
-    expect(host.calls).toEqual(['delete', 'reload', 'lasso']);
-  });
-
-  it('does not reload while the saved file still has the deleted stroke', async () => {
-    const loop = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([el(word(480, 500)), loop]);
-    // The device "forgets" the deletion: the file keeps the loop.
-    host.deleteElements = async nums => {
-      host.calls.push('delete');
-      host.deleted.push(nums);
-      return true;
-    };
-    const lines: string[] = [];
-
-    await handlePenUp([loop], host, DEFAULT_CONFIG, {
-      trace: l => lines.push(l),
-    });
-    expect(host.calls).not.toContain('reload');
-    expect(lines).toContain(
-      'not refreshed: the saved file still had the deleted strokes',
-    );
-  });
-
-  it('does not refresh the screen when that is switched off', async () => {
-    const loop = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([el(word(480, 500)), loop]);
-
-    await handlePenUp([loop], host, DEFAULT_CONFIG, {
-      gestures: {loopSelect: true, marginErase: true, screenRefresh: false},
-    });
     expect(host.calls).toEqual(['delete', 'lasso']);
+    expect(reads).toBe(1);
   });
 
   it('finds a loop followed by more writing in the same pen-up event', async () => {
@@ -523,6 +500,36 @@ describe('handlePenUp: margin wave to erase', () => {
 
     await handlePenUp([mark], host, DEFAULT_CONFIG);
     expect(host.calls).toEqual(['delete', 'reload']);
+  });
+
+  it('does not reload while the saved file still has the deleted strokes', async () => {
+    const mark = el(leftShell);
+    const host = fakeHost([...row(500), mark]);
+    // The device "forgets" the deletion: the file keeps the strokes.
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      return true;
+    };
+    const lines: string[] = [];
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+    expect(host.calls).not.toContain('reload');
+    expect(lines).toContain(
+      'not refreshed: the saved file still had the deleted strokes',
+    );
+  });
+
+  it('does not refresh the screen when that is switched off', async () => {
+    const mark = el(leftShell);
+    const host = fakeHost([...row(500), mark]);
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      gestures: {loopSelect: true, marginErase: true, screenRefresh: false},
+    });
+    expect(host.calls).toEqual(['delete']);
   });
 
   it('takes the whole line: dots, far words, touching strokes', async () => {

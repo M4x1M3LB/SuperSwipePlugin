@@ -25,12 +25,16 @@ Both gestures:
 - Are found even when quickly followed by more writing: the device delivers
   strokes drawn in quick succession together, and every one of them is
   checked, newest first.
-- Refresh the screen afterwards (switch on the plugin screen), so deleted
-  strokes do not linger as ghosts: the note is reloaded, which repaints the
-  page. Safely: only once the saved file has been read back and no longer
-  holds the deleted strokes (a reload that reads the file before a save has
-  finished brings old strokes back), and only if the pen was not used since
-  the save (it would be lost).
+- Read the page's strokes in parallel batches, which is much faster on a
+  full page.
+
+After an erase, the screen is refreshed (switch on the plugin screen), so
+deleted strokes do not linger as ghosts: the note is reloaded, which
+repaints the page. Safely: only once the saved file has been read back and
+no longer holds the deleted strokes (a reload that reads the file before a
+save has finished brings old strokes back), and only if the pen was not used
+since the save (it would be lost). The loop is not followed by a refresh: it
+is slow and would drop the selection.
 
 Loop to select:
 
@@ -42,6 +46,8 @@ Loop to select:
   loop, on the same layer. The loop counts as 20 px larger than drawn, so a
   loop drawn tight around writing, or slightly cutting through it, still
   selects it.
+- Fast: the loop is removed with a single delete (no saving and reading the
+  page back to check it) and the selection follows straight away.
 - If the loop encloses nothing, it stays on the page as normal ink, so
   drawing an "O" or a circle on empty paper still works.
 - Circling twice works too (inside is decided by winding, not by counting
@@ -95,7 +101,7 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.16.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.17.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

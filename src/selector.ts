@@ -84,7 +84,7 @@ export interface Host {
 export interface Gestures {
   loopSelect: boolean;
   marginErase: boolean;
-  /** Repaint the page after a gesture deletes strokes (against ghosting). */
+  /** Repaint the page after an erase (against ghosting). */
   screenRefresh?: boolean;
 }
 
@@ -258,8 +258,7 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   // grazes or slightly cuts through still count.
   const area = growPolygon(polygon, config.loopMargin);
   const boxes: Box[] = [];
-  for (const element of ctx.others) {
-    const outline = await element.outline();
+  for (const outline of await outlinesOf(ctx.others)) {
     if (
       outline.length > 0 &&
       fractionInside(outline, area) >= config.minInsideFraction
@@ -283,13 +282,12 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   if (blocked) {
     return blocked;
   }
-  const removed = await deleteVerified(ctx, [stroke]);
-  if (!removed.deleted) {
+  // One stroke: no need to save and read the page back to check, and no
+  // reload (slow, and it would drop the selection). Speed matters here.
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
   ctx.trace('loop stroke removed');
-  // Before selecting: a reload would drop the selection.
-  await repaint(ctx, removed.fileClean);
 
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
@@ -305,15 +303,15 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
  */
 async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
+  const candidates = ctx.others.filter(e => e.type === STROKE);
+  const outlines = await outlinesOf(candidates);
   const strokes: {element: PageElement; outline: Pt[]; box: Box}[] = [];
-  for (const element of ctx.others) {
-    if (element.type === STROKE) {
-      const outline = await element.outline();
-      if (outline.length > 0) {
-        strokes.push({element, outline, box: boundingBox(outline)});
-      }
+  candidates.forEach((element, i) => {
+    const outline = outlines[i];
+    if (outline.length > 0) {
+      strokes.push({element, outline, box: boundingBox(outline)});
     }
-  }
+  });
   // The mark has no direction: the line is on whichever side it is.
   // Writing on both sides means the mark is part of the text.
   const boxes = strokes.map(s => s.box);
@@ -382,17 +380,11 @@ async function deleteVerified(
 
   // Saves the page, then reads the file: what is still there.
   const stillThere = async () => {
-    const left: PageElement[] = [];
-    for (const e of await host.getPageElements(path, page)) {
-      if (
-        e.type === STROKE &&
-        e.layerNum === stroke.layerNum &&
-        wanted.has(await signature(e))
-      ) {
-        left.push(e);
-      }
-    }
-    return left;
+    const same = (await host.getPageElements(path, page)).filter(
+      e => e.type === STROKE && e.layerNum === stroke.layerNum,
+    );
+    const signatures = await Promise.all(same.map(signature));
+    return same.filter((_, i) => wanted.has(signatures[i]));
   };
 
   if (
@@ -429,6 +421,22 @@ async function repaint(ctx: Context, fileClean: boolean): Promise<void> {
       ? 'screen refreshed (note reloaded)'
       : 'not refreshed: the pen was used since the save',
   );
+}
+
+/** How many element outlines to read from the device at once. */
+const READ_BATCH = 64;
+
+/**
+ * The elements' outlines, read in parallel batches: each read is a call to
+ * the device, and waiting for them one by one is slow on a full page.
+ */
+async function outlinesOf(elements: PageElement[]): Promise<Pt[][]> {
+  const result: Pt[][] = [];
+  for (let i = 0; i < elements.length; i += READ_BATCH) {
+    const batch = elements.slice(i, i + READ_BATCH);
+    result.push(...(await Promise.all(batch.map(e => e.outline()))));
+  }
+  return result;
 }
 
 /** Last checks before the page is modified; returns why not to, if any. */
