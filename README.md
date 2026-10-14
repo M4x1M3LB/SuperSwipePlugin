@@ -31,6 +31,9 @@ All gestures:
 - Are found even when quickly followed by more writing: the device delivers
   strokes drawn in quick succession together, and every one of them is
   checked, newest first.
+- Never miss a stroke drawn while the previous one is still being looked
+  at (such as the second corner right after the first): it is handled
+  next, instead of being dropped.
 - Read the page's strokes in parallel batches, which is much faster on a
   full page.
 
@@ -136,7 +139,7 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.18.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.19.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

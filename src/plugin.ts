@@ -6,6 +6,9 @@ import {status} from './status';
 
 let host: DeviceHost | null = null;
 
+/** Most strokes kept waiting while another is handled (the newest). */
+const MAX_WAITING = 20;
+
 /** Start listening for strokes. Call once, after PluginManager.init(). */
 export function startGestures(): void {
   const pen = new PenTracker();
@@ -17,6 +20,59 @@ export function startGestures(): void {
   // pause them once the plugin view has been shown), so a stroke that is
   // still busy after the time limit is abandoned when the next one arrives.
   let busy: {since: number; abandon: () => void} | null = null;
+  // Strokes that arrived while another was being handled. They are handled
+  // next, together (newest first), not dropped: the second corner of a
+  // rectangle is often drawn while the first is still being looked at.
+  let waiting: Element[] = [];
+
+  const handle = (raw: Element[]) => {
+    const lines: string[] = [];
+    const trace = (line: string) => {
+      lines.push(line);
+    };
+    let abandoned = false;
+    const current = {
+      since: Date.now(),
+      abandon: () => {
+        abandoned = true;
+        trace('abandoned: took too long');
+        status.setLast({kind: 'failed', reason: 'timed out'}, lines);
+      },
+    };
+    busy = current;
+    device.setTrace(trace);
+
+    const elements = device.wrap(raw);
+    handlePenUp(elements, device, DEFAULT_CONFIG, {
+      gestures: status.gestures(),
+      isCancelled: () => abandoned,
+      trace,
+      // Time spent waiting for the user's answer does not count.
+      keepAlive: () => {
+        current.since = Date.now();
+      },
+    })
+      .catch(
+        (e: unknown): Outcome => ({
+          kind: 'failed',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      )
+      .then(outcome => {
+        if (busy !== current) {
+          return; // abandoned; a newer stroke owns the host now
+        }
+        trace(`took ${Date.now() - current.since} ms`);
+        status.setLast(outcome, lines);
+        device.release();
+        busy = null;
+        if (waiting.length > 0) {
+          const next = waiting;
+          waiting = [];
+          handle(next);
+        }
+      });
+  };
 
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
@@ -33,54 +89,16 @@ export function startGestures(): void {
       ) {
         return;
       }
+      const incoming = [...waiting, ...(msg as Element[])].slice(-MAX_WAITING);
+      waiting = [];
       if (busy) {
         if (Date.now() - busy.since < DEFAULT_CONFIG.timeoutMs) {
+          waiting = incoming;
           return;
         }
         busy.abandon();
       }
-
-      const lines: string[] = [];
-      const trace = (line: string) => {
-        lines.push(line);
-      };
-      let abandoned = false;
-      const current = {
-        since: Date.now(),
-        abandon: () => {
-          abandoned = true;
-          trace('abandoned: took too long');
-          status.setLast({kind: 'failed', reason: 'timed out'}, lines);
-        },
-      };
-      busy = current;
-      device.setTrace(trace);
-
-      const elements = device.wrap(msg as Element[]);
-      handlePenUp(elements, device, DEFAULT_CONFIG, {
-        gestures,
-        isCancelled: () => abandoned,
-        trace,
-        // Time spent waiting for the user's answer does not count.
-        keepAlive: () => {
-          current.since = Date.now();
-        },
-      })
-        .catch(
-          (e: unknown): Outcome => ({
-            kind: 'failed',
-            reason: e instanceof Error ? e.message : String(e),
-          }),
-        )
-        .then(outcome => {
-          if (busy !== current) {
-            return; // abandoned; a newer stroke owns the host now
-          }
-          trace(`took ${Date.now() - current.since} ms`);
-          status.setLast(outcome, lines);
-          device.release();
-          busy = null;
-        });
+      handle(incoming);
     },
   });
 }
