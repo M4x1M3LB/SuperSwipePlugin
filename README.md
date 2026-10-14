@@ -95,8 +95,9 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `build/outputs/SuperSwipe.snplg` to the `MyStyle` folder on the
-   device.
+1. Copy `release/SuperSwipe-0.0.16.snplg` (ready to install, or your own
+   build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
+   the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
