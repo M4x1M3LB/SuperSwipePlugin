@@ -1,16 +1,16 @@
 import {
-  DEFAULT_DOUBLE_LOOP_OPTIONS,
   DEFAULT_LOOP_OPTIONS,
+  DEFAULT_WAVE_OPTIONS,
   DEFAULT_WRITING_LINE_OPTIONS,
-  type DoubleLoopOptions,
   type LoopOptions,
+  type WaveOptions,
   type WritingLineOptions,
 } from './geometry';
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  /** The margin mark: one stroke making two loops side by side (a pigtail). */
-  doubleLoop: DoubleLoopOptions;
+  /** The margin mark: a sideways wave with 3 bounces or more ("∿∿"). */
+  wave: WaveOptions;
   /** Which strokes form the line of writing next to the mark. */
   writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
@@ -38,7 +38,7 @@ export interface SelectorConfig {
 
 export const DEFAULT_CONFIG: SelectorConfig = {
   loop: DEFAULT_LOOP_OPTIONS,
-  doubleLoop: DEFAULT_DOUBLE_LOOP_OPTIONS,
+  wave: DEFAULT_WAVE_OPTIONS,
   writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],

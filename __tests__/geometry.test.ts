@@ -2,7 +2,7 @@ import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
   netTurning,
-  checkDoubleLoop,
+  checkWave,
   findWritingLine,
   strokesTouch,
   fractionInside,
@@ -158,79 +158,67 @@ describe('polygon helpers', () => {
   });
 });
 
-/**
- * A pigtail: a prolate cycloid with `loops` loops, drawn left to right,
- * 2b px tall, loops 2πa px apart.
- */
-function pigtail(
-  cx: number,
+/** A sideways wave: `span` radians of a sine, `amp` px up and down. */
+function wave(
+  left: number,
   cy: number,
-  a: number,
-  b: number,
-  loops = 2,
-  n = 120,
+  width: number,
+  amp: number,
+  span = 3 * Math.PI,
+  n = 60,
 ): Pt[] {
-  const t0 = Math.PI;
-  const t1 = t0 + loops * 2 * Math.PI;
   return Array.from({length: n + 1}, (_, i) => {
-    const t = t0 + ((t1 - t0) * i) / n;
-    return {x: cx + a * (t - t0) - b * Math.sin(t), y: cy - b * Math.cos(t)};
+    const t = i / n;
+    return {x: left + width * t, y: cy - amp * Math.sin(span * t)};
   });
 }
 
-describe('checkDoubleLoop', () => {
-  it('recognises a pigtail with two loops', () => {
-    expect(checkDoubleLoop(pigtail(40, 520, 5, 15))).toHaveProperty('box');
-  });
-
-  it('recognises it drawn right to left, or with tight loops', () => {
-    const reversed = pigtail(40, 520, 5, 15).reverse();
-    expect(checkDoubleLoop(reversed)).toHaveProperty('box');
-    expect(checkDoubleLoop(pigtail(40, 520, 3, 15))).toHaveProperty('box');
-  });
-
-  it('tolerates a shaky hand', () => {
-    const shaky = pigtail(40, 520, 5, 15).map((p, i) => ({
-      x: p.x + ((i * 7) % 3) - 1,
-      y: p.y + ((i * 5) % 3) - 1,
-    }));
-    expect(checkDoubleLoop(shaky)).toHaveProperty('box');
-  });
-
-  it('needs exactly two loops', () => {
-    expect(checkDoubleLoop(pigtail(40, 520, 5, 15, 1))).toEqual({
-      reason: '1 loop(s), needs exactly 2',
-    });
-    expect(checkDoubleLoop(pigtail(40, 520, 5, 15, 3))).toEqual({
-      reason: '3 loop(s), needs exactly 2',
-    });
-    expect(checkDoubleLoop(ellipse(60, 520, 20, 20))).toHaveProperty('reason');
-  });
-
-  it('rejects a circle drawn twice (loops on top of each other)', () => {
-    expect(checkDoubleLoop(pigtail(40, 520, 0.5, 15))).toMatchObject({
-      reason: expect.stringContaining('on top of each other'),
+describe('checkWave', () => {
+  it('recognises a tilde with an extra bounce', () => {
+    expect(checkWave(wave(10, 520, 60, 12))).toEqual({
+      box: expect.objectContaining({left: 10, right: 70}),
     });
   });
 
-  it('rejects writing-like strokes', () => {
-    expect(
-      checkDoubleLoop(line({x: 0, y: 0}, {x: 200, y: 0})),
-    ).toHaveProperty('reason');
-    expect(checkDoubleLoop(ellipse(60, 520, 20, 20, 0.5))).toHaveProperty(
-      'reason',
+  it('accepts it right to left, upside down, and with more bounces', () => {
+    expect(checkWave(wave(10, 520, 60, 12).reverse())).toHaveProperty('box');
+    expect(checkWave(wave(10, 520, 60, -12))).toHaveProperty('box');
+    expect(checkWave(wave(10, 520, 100, 12, 6 * Math.PI, 120))).toHaveProperty(
+      'box',
     );
   });
 
+  it('tolerates a shaky hand', () => {
+    const shaky = wave(10, 520, 60, 12).map((p, i) => ({
+      x: p.x,
+      y: p.y + ((i * 7) % 3) - 1,
+    }));
+    expect(checkWave(shaky)).toHaveProperty('box');
+  });
+
+  it('rejects a plain tilde', () => {
+    expect(checkWave(wave(10, 520, 60, 12, 2 * Math.PI))).toEqual({
+      reason: '2 bounce(s), needs 3 or more',
+    });
+  });
+
+  it('rejects loops, lines and tall strokes', () => {
+    expect(checkWave(ellipse(60, 520, 30, 12))).toMatchObject({
+      reason: expect.stringContaining('goes back'),
+    });
+    expect(checkWave(line({x: 0, y: 500}, {x: 200, y: 505}))).toEqual({
+      reason: 'too flat (a line)',
+    });
+    expect(checkWave(line({x: 0, y: 0}, {x: 0, y: 200}))).toEqual({
+      reason: 'taller than wide',
+    });
+  });
+
   it('checks size on the page copy only', () => {
-    const big = pigtail(100, 500, 50, 150);
-    expect(checkDoubleLoop(big)).toMatchObject({
-      reason: expect.stringContaining('too big'),
-    });
-    expect(checkDoubleLoop(big, undefined, false)).toHaveProperty('box');
-    expect(checkDoubleLoop(pigtail(40, 520, 1, 3))).toEqual({
-      reason: 'too small',
-    });
+    const big = wave(0, 500, 600, 100);
+    expect(checkWave(big)).toEqual({reason: 'too big (600 px)'});
+    expect(checkWave(big, undefined, false)).toHaveProperty('box');
+    expect(checkWave(wave(0, 500, 12, 3))).toEqual({reason: 'too small'});
   });
 });
 

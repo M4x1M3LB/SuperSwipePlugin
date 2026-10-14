@@ -382,102 +382,105 @@ export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
   return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
 }
 
-export interface DoubleLoopOptions {
+export interface WaveOptions {
   /** Minimum number of sample points. */
   minPoints: number;
   /**
-   * A loop is where the stroke crosses itself; it only counts when it
-   * encloses at least this fraction of the stroke's bounding box (so hand
-   * tremor and tiny curls do not count).
+   * Minimum number of bounces: the stroke turning between up and down. A
+   * tilde "~" has 2, so it needs 3 or more to count.
    */
-  minLoopArea: number;
+  minBounces: number;
+  /** A bounce must turn back by at least this fraction of the wave's height. */
+  bounceRatio: number;
+  /** Width over height, at least: the wave runs sideways. */
+  minAspect: number;
+  /** Height over width, at least: flatter is a line, not a wave. */
+  minFlatness: number;
   /**
-   * The two loops must sit side by side: centres at least this many times
-   * the larger loop's size apart (a circle drawn twice has its two passes on
-   * top of each other).
+   * Movement backwards along the wave, as a fraction of its width, at most:
+   * a wave never goes back on itself (loops and cursive letters do).
    */
-  minLoopSpacing: number;
-  /** Size limits of the mark's box, in px (checked on the page copy). */
+  maxBacktrack: number;
+  /** Size limits of the mark's width, in px (checked on the page copy). */
   minSize: number;
   maxSize: number;
 }
 
-export const DEFAULT_DOUBLE_LOOP_OPTIONS: DoubleLoopOptions = {
-  minPoints: 15,
-  minLoopArea: 0.04,
-  minLoopSpacing: 0.4,
+export const DEFAULT_WAVE_OPTIONS: WaveOptions = {
+  minPoints: 10,
+  minBounces: 3,
+  bounceRatio: 0.25,
+  minAspect: 1,
+  minFlatness: 0.12,
+  maxBacktrack: 0.15,
   minSize: 20,
-  maxSize: 300,
+  maxSize: 400,
 };
 
 /**
- * Is the stroke a double loop: exactly two loops side by side, each closed
- * where the stroke crosses itself (a pigtail, a cursive "ll")? Returns its
+ * Is the stroke a sideways wave with 3 bounces or more (like "∿∿", a tilde
+ * with an extra bounce), drawn left to right or right to left? Returns its
  * bounding box, or why not.
  *
- * Crossings and loops do not depend on the coordinate system, rotation or
- * scale, so with `checkSize` false the check works on the pen-up copy.
+ * Only ratios are used, so with `checkSize` false the check works on the
+ * pen-up copy, whatever its scale.
  */
-export function checkDoubleLoop(
+export function checkWave(
   points: Pt[],
-  options: DoubleLoopOptions = DEFAULT_DOUBLE_LOOP_OPTIONS,
+  options: WaveOptions = DEFAULT_WAVE_OPTIONS,
   checkSize = true,
 ): {box: Box} | {reason: string} {
   if (points.length < options.minPoints) {
     return {reason: 'too few points'};
   }
   const box = boundingBox(points);
-  const boxArea = Math.max(
-    1e-9,
-    (box.right - box.left) * (box.bottom - box.top),
-  );
-  // Thin the path so jitter between nearby samples does not cross itself.
-  const step = Math.max(1e-9, pathLength(points) / 80);
-  const path = [points[0]];
+  const width = box.right - box.left;
+  const height = box.bottom - box.top;
+  if (width < options.minAspect * height) {
+    return {reason: 'taller than wide'};
+  }
+  if (height < options.minFlatness * width) {
+    return {reason: 'too flat (a line)'};
+  }
+  // Sideways progress: little movement against the overall direction.
+  const dir = Math.sign(points[points.length - 1].x - points[0].x) || 1;
+  let back = 0;
+  for (let i = 1; i < points.length; i++) {
+    back += Math.max(0, -dir * (points[i].x - points[i - 1].x));
+  }
+  if (back > options.maxBacktrack * width) {
+    return {reason: `goes back on itself (${Math.round((100 * back) / width)} %)`};
+  }
+  // Bounces, with hysteresis so a shaky hand does not add any.
+  const turn = options.bounceRatio * height;
+  let bounces = 0;
+  let going = 0; // +1 down, -1 up, 0 not yet moving
+  let extreme = points[0].y;
   for (const p of points) {
-    if (distance(path[path.length - 1], p) >= step) {
-      path.push(p);
+    if (going === 0) {
+      if (Math.abs(p.y - extreme) >= turn) {
+        going = Math.sign(p.y - extreme);
+        extreme = p.y;
+      }
+    } else if ((p.y - extreme) * going > 0) {
+      extreme = p.y;
+    } else if (Math.abs(p.y - extreme) >= turn) {
+      bounces++;
+      going = -going;
+      extreme = p.y;
     }
   }
-
-  // Each self-crossing closes a loop: the path between the two segments.
-  const loops: {from: number; to: number; polygon: Pt[]}[] = [];
-  for (let i = 0; i + 1 < path.length; i++) {
-    for (let j = i + 2; j + 1 < path.length; j++) {
-      if (!segmentsIntersect(path[i], path[i + 1], path[j], path[j + 1])) {
-        continue;
-      }
-      const polygon = path.slice(i + 1, j + 1);
-      if (polygonArea(polygon) < options.minLoopArea * boxArea) {
-        continue;
-      }
-      // The same loop can be found by a few neighbouring segment pairs.
-      const overlapping = loops.some(l => i < l.to && j > l.from);
-      if (!overlapping) {
-        loops.push({from: i, to: j, polygon});
-      }
-    }
-  }
-  if (loops.length !== 2) {
-    return {reason: `${loops.length} loop(s), needs exactly 2`};
-  }
-  const [a, b] = loops.map(l => boundingBox(l.polygon));
-  const centre = (r: Box) => ({
-    x: (r.left + r.right) / 2,
-    y: (r.top + r.bottom) / 2,
-  });
-  const size = (r: Box) => Math.max(r.right - r.left, r.bottom - r.top);
-  const spacing = distance(centre(a), centre(b)) / Math.max(size(a), size(b));
-  if (spacing < options.minLoopSpacing) {
-    return {reason: 'loops on top of each other (a circle drawn twice?)'};
+  if (bounces < options.minBounces) {
+    return {
+      reason: `${bounces} bounce(s), needs ${options.minBounces} or more`,
+    };
   }
   if (checkSize) {
-    const markSize = size(box);
-    if (markSize < options.minSize) {
+    if (width < options.minSize) {
       return {reason: 'too small'};
     }
-    if (markSize > options.maxSize) {
-      return {reason: `too big (${Math.round(markSize)} px)`};
+    if (width > options.maxSize) {
+      return {reason: `too big (${Math.round(width)} px)`};
     }
   }
   return {box};
@@ -503,7 +506,7 @@ export interface WritingLineOptions {
 export const DEFAULT_WRITING_LINE_OPTIONS: WritingLineOptions = {
   bandScale: 0.9,
   minBandHalf: 36,
-  minGap: 0,
+  minGap: 20,
   minGapRatio: 0.75,
 };
 

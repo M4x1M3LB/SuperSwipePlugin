@@ -3,9 +3,9 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin double loop to erase: one stroke making two loops side by side
- *   (a pigtail, or a cursive "ll"), in the margin level with a line of
- *   writing, erases that line and the mark.
+ * - Margin wave to erase: a sideways wave with 3 bounces or more ("∿∿", a
+ *   tilde with an extra bounce), in the margin level with a line of
+ *   writing, erases that line and the wave.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -17,7 +17,7 @@ import {
   boundingBox,
   checkClosedLoop,
   findClosedLoop,
-  checkDoubleLoop,
+  checkWave,
   findWritingLine,
   fractionInside,
   growPolygon,
@@ -146,8 +146,9 @@ export async function handlePenUp(
   // stroke, newest first, and take the first gesture.
   //
   // Checked on the pen-up copy, so nothing is read from (or saved to) the
-  // page for ordinary writing. The double loop is checked first: it also
-  // turns far enough, and closes, to pass as a loop.
+  // page for ordinary writing. The pen-up copy's axes are not guaranteed to
+  // match the page's, so a wave running either way passes here; the page
+  // copy decides.
   let gesture: PageElement | null = null;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
@@ -157,12 +158,13 @@ export async function handlePenUp(
     const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
     trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
     if (gestures.marginErase) {
-      const double = checkDoubleLoop(pts, config.doubleLoop, false);
-      if ('box' in double) {
+      const wave = checkWave(pts, config.wave, false);
+      const swapped = pts.map(p => ({x: p.y, y: p.x}));
+      if ('box' in wave || 'box' in checkWave(swapped, config.wave, false)) {
         [gesture, points] = [candidate, pts];
         break;
       }
-      trace(`  double-loop check: ${double.reason}`);
+      trace(`  wave check: ${wave.reason}`);
     }
     if (gestures.loopSelect) {
       const loop = checkClosedLoop(pts, config.loop);
@@ -176,7 +178,7 @@ export async function handlePenUp(
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: double loop');
+  trace(polygon ? 'shape: closed loop' : 'shape: wave');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -233,16 +235,13 @@ export async function handlePenUp(
     return selectInLoop(ctx, pagePolygon);
   }
 
-  const checked = checkDoubleLoop(stored, config.doubleLoop);
+  const checked = checkWave(stored, config.wave);
   if ('reason' in checked) {
-    return {
-      kind: 'ignored',
-      reason: `double loop on the page: ${checked.reason}`,
-    };
+    return {kind: 'ignored', reason: `wave on the page: ${checked.reason}`};
   }
   const mark = checked.box;
   trace(
-    `double loop: ${Math.round(mark.right - mark.left)}×${Math.round(
+    `wave: ${Math.round(mark.right - mark.left)}×${Math.round(
       mark.bottom - mark.top,
     )} px`,
   );

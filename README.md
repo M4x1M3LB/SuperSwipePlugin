@@ -5,9 +5,9 @@ A Supernote plugin for NOTE files, with two pen gestures:
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
-- **Margin double loop to erase:** in one stroke, draw two crossing loops
-  side by side (a pigtail, or a cursive "ll") in the margin next to a line
-  of writing, left or right, and that whole line is erased, with the mark.
+- **Margin wave to erase:** draw a sideways wave with three bounces or more
+  (∿∿, a tilde with an extra bounce) in the margin next to a line of
+  writing, left or right, and that whole line is erased, with the wave.
 
 Built with the official plugin framework (React Native 0.79.2,
 `sn-plugin-lib` 0.2.3) following https://docs.supernote.com/en.
@@ -47,16 +47,17 @@ Loop to select:
 - Circling twice works too (inside is decided by winding, not by counting
   crossings).
 
-Margin double loop to erase:
+Margin wave to erase:
 
-- One stroke that crosses itself to make exactly two loops, side by side
-  (each loop at least 4 % of the mark's area), drawn in either direction;
-  20–300 px across. One loop is a loop (select), three or more is cursive
-  writing, and a circle drawn twice (loops on top of each other) stays a
-  loop.
-- Leave a gap: the writing must start at least 0.75 × the mark's height
-  away (wider than the space between two words, so a written "ll" right
-  after a word does not erase the line).
+- One stroke that runs sideways (left to right or right to left, never
+  going back on itself) and turns between up and down at least 3 times: a
+  tilde "~" turns twice, so it stays ink. Each bounce must turn back by a
+  quarter of the wave's height or more, so a shaky line is not a wave. Wider
+  than tall, not flat as a line, 20–400 px wide.
+- A loop always goes back on itself, so it can never be taken for the wave.
+- Leave a gap: the writing must start at least 20 px (or 0.75 × the wave's
+  height) away, so a wavy word written right after the line does not erase
+  it.
 - It has no direction: it erases the line on whichever side the writing is.
   Writing on both sides (a mark inside the text), touching it or too close:
   nothing happens. A mark with no writing next to it stays as ink.
@@ -66,8 +67,8 @@ Margin double loop to erase:
   joined letters).
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
 - Nothing is read from or saved to the note unless the stroke has the shape
-  of a double loop (self-crossings do not depend on the coordinates, so
-  this is checked on the stroke as delivered).
+  of a wave (checked on the stroke as delivered, either way round, with
+  ratios only, so its scale and axes do not matter).
 - **Restore last erase** on the plugin screen puts the last erased line
   back (same note; the plugin keeps it until the next erase).
 
@@ -85,10 +86,10 @@ Margin double loop to erase:
 - **The selection is a rectangle.** `lassoElements` only accepts a rectangle,
   so the selection is the bounding box of everything the loop enclosed.
   Strokes that sit inside that box but outside your loop are selected too.
-- **Circling for emphasis, or a double loop next to a line.** Circling a
-  word selects it, and a double loop beside a line erases it. A word with
-  two loops (such as "ll") written alone at the end of a line, after an
-  unusually wide gap, can be taken for the mark: **Restore last erase**
+- **Circling for emphasis, or a wave next to a line.** Circling a word
+  selects it, and a wave beside a line erases it. A wavy word (such as a
+  cursive "mm") written alone at the end of a line, after a wide gap, can
+  be taken for the mark: **Restore last erase**
   brings the line back. Use the marker for those,
   or turn a gesture off from the plugin screen.
 
@@ -99,7 +100,7 @@ Margin double loop to erase:
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
-4. Draw a loop around some writing, or a double loop beside a line.
+4. Draw a loop around some writing, or a wave beside a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
@@ -124,11 +125,11 @@ Layout:
 | --- | --- |
 | `index.js` | Plugin entry: `PluginManager.init()`, buttons, starts the listener |
 | `App.tsx` | Plugin screen (switches, restore, file access, last result) |
-| `src/geometry.ts` | Loop and double-loop detection, containment, line of writing (pure) |
+| `src/geometry.ts` | Loop and wave detection, containment, line of writing (pure) |
 | `src/selector.ts` | Gesture flows on pen-up, against a `Host` interface (pure) |
 | `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, erase restore |
 | `src/plugin.ts` | Wires the pen-up event to the selector with a timeout |
-| `src/config.ts` | Thresholds (pen types, loop and double-loop tolerance, line rules) |
+| `src/config.ts` | Thresholds (pen types, loop and wave tolerance, line rules) |
 
 `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
 will treat it as a different plugin. Bump `versionCode` for each release.
