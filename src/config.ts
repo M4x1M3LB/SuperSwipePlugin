@@ -9,7 +9,7 @@ import {
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  /** The margin ┘: one stroke, a vertical leg and a horizontal leg. */
+  /** Margin marks ┌ and ┘: one stroke, a vertical and a horizontal leg. */
   corner: CornerOptions;
   /** Which strokes form the line of writing next to the mark. */
   writingLine: WritingLineOptions;

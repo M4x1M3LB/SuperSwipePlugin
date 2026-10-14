@@ -3,8 +3,9 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin ┘ to erase: a small reverse L (one stroke) in the margin, level
- *   with a line of writing, erases that line and the mark.
+ * - Margin mark to erase: a ┌ (one stroke) in the left margin, or a ┘ in the
+ *   right margin, level with a line of writing, erases that line and the
+ *   mark.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -154,7 +155,7 @@ export async function handlePenUp(
       options.penUpIsPage === true,
     );
     if ('reason' in mark) {
-      trace(`┘ check: ${mark.reason}`);
+      trace(`mark check: ${mark.reason}`);
     } else {
       isMark = true;
     }
@@ -162,7 +163,7 @@ export async function handlePenUp(
   if (!polygon && !isMark) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: ┘ mark');
+  trace(polygon ? 'shape: closed loop' : 'shape: margin mark');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -212,15 +213,20 @@ export async function handlePenUp(
 
   const checked = checkCornerMark(stored, config.corner);
   if ('reason' in checked) {
-    return {kind: 'ignored', reason: `┘ on the page: ${checked.reason}`};
+    return {kind: 'ignored', reason: `mark on the page: ${checked.reason}`};
   }
   const mark = checked.box;
+  // ┌ in the left margin erases the line on its right; ┘ in the right
+  // margin, the line on its left.
+  const side = checked.kind === 'topLeft' ? 'right' : 'left';
   trace(
-    `┘ mark: ${Math.round(mark.right - mark.left)}×${Math.round(
+    `${side === 'right' ? '┌' : '┘'} mark: ${Math.round(
+      mark.right - mark.left,
+    )}×${Math.round(
       mark.bottom - mark.top,
-    )} px`,
+    )} px, erasing the line on its ${side}`,
   );
-  return eraseNextToMark(ctx, mark);
+  return eraseNextToMark(ctx, mark, side);
 }
 
 /** Are two copies of a stroke the same points (same coordinates)? */
@@ -285,7 +291,11 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
  * Erase the line of writing to the right of a margin mark, the strokes
  * touching it (a "t" bar, a descender), and the mark.
  */
-async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
+async function eraseNextToMark(
+  ctx: Context,
+  mark: Box,
+  side: 'left' | 'right',
+): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
   const strokes: {element: PageElement; outline: Pt[]; box: Box}[] = [];
   for (const element of ctx.others) {
@@ -300,9 +310,10 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
     mark,
     strokes.map(s => s.box),
     config.writingLine,
+    side,
   );
   if ('reason' in line) {
-    // A written "x", or a cross drawn as content: leave the ink alone.
+    // A corner drawn as part of the text: leave the ink alone.
     return {kind: 'ignored', reason: line.reason};
   }
   const row = line.indices.map(i => strokes[i]);

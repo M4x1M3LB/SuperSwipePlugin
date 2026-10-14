@@ -470,9 +470,15 @@ function axisAngle(a: Pt, b: Pt): number {
 }
 
 /**
- * Is the stroke a reverse L (┘): a vertical leg and a horizontal leg meeting
- * at a corner at the bottom right? Drawn either way (down then left, or
- * right then up). Returns the stroke's bounding box, or why not.
+ * Which corner a margin mark has: ┌ (top left, for the left margin) or
+ * ┘ (bottom right, for the right margin).
+ */
+export type CornerKind = 'topLeft' | 'bottomRight';
+
+/**
+ * Is the stroke a margin mark: a vertical leg and a horizontal leg meeting at
+ * a corner at the top left (┌) or the bottom right (┘)? Drawn either way.
+ * Returns the stroke's bounding box and which corner, or why not.
  *
  * With `checkLayout` false, only what does not depend on the coordinate
  * system is checked (one corner, two straight legs, angle, leg ratio): used
@@ -482,7 +488,7 @@ export function checkCornerMark(
   points: Pt[],
   options: CornerOptions = DEFAULT_CORNER_OPTIONS,
   checkLayout = true,
-): {box: Box} | {reason: string} {
+): {box: Box; kind?: CornerKind} | {reason: string} {
   if (points.length < 2 * options.leg.minPoints) {
     return {reason: 'too few points'};
   }
@@ -533,18 +539,26 @@ export function checkCornerMark(
     if (Math.max(la, lb) > options.maxLeg) {
       return {reason: `legs too long (${Math.round(Math.max(la, lb))} px)`};
     }
-    // Which end is up the vertical leg, which is along the horizontal one.
-    const [up, side] =
+    // Which end is along the vertical leg, which along the horizontal one.
+    const [vertical, side] =
       axisAngle(corner, first) > axisAngle(corner, last)
         ? [first, last]
         : [last, first];
     const tol = options.axisTolerance;
-    if (axisAngle(corner, up) < 90 - tol || axisAngle(corner, side) > tol) {
+    if (
+      axisAngle(corner, vertical) < 90 - tol ||
+      axisAngle(corner, side) > tol
+    ) {
       return {reason: 'legs not vertical and horizontal'};
     }
-    if (up.y >= corner.y || side.x >= corner.x) {
-      return {reason: 'not a reverse L (corner must be bottom right)'};
+    // ┌: the legs go down and right from the corner; ┘: up and left.
+    if (vertical.y > corner.y && side.x > corner.x) {
+      return {box: boundingBox(points), kind: 'topLeft'};
     }
+    if (vertical.y < corner.y && side.x < corner.x) {
+      return {box: boundingBox(points), kind: 'bottomRight'};
+    }
+    return {reason: 'corner must be top left (┌) or bottom right (┘)'};
   }
   return {box: boundingBox(points)};
 }
@@ -568,33 +582,41 @@ export const DEFAULT_WRITING_LINE_OPTIONS: WritingLineOptions = {
 };
 
 /**
- * The line of writing to the right of a margin mark: indices of the boxes
- * whose vertical centre is level with the mark. Refused (with the reason)
- * when there is writing level with the mark on its left or under it, which
- * means the mark is part of the text (a written "x"), not in the margin.
+ * The line of writing next to a margin mark, on the given side of it:
+ * indices of the boxes whose vertical centre is level with the mark. Refused
+ * (with the reason) when there is writing level with the mark on its other
+ * side or under it, which means the mark is part of the text, not in the
+ * margin.
  */
 export function findWritingLine(
   mark: Box,
   boxes: Box[],
   options: WritingLineOptions = DEFAULT_WRITING_LINE_OPTIONS,
+  side: 'right' | 'left' = 'right',
 ): {indices: number[]} | {reason: string} {
   const centre = (mark.top + mark.bottom) / 2;
   const half = Math.max(
     options.minBandHalf,
     options.bandScale * (mark.bottom - mark.top),
   );
+  const other = side === 'right' ? 'left' : 'right';
   const indices: number[] = [];
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
     if (Math.abs((b.top + b.bottom) / 2 - centre) > half) {
       continue;
     }
-    if (b.left < mark.right + options.minGap) {
+    const onSide =
+      side === 'right'
+        ? b.left >= mark.right + options.minGap
+        : b.right <= mark.left - options.minGap;
+    if (!onSide) {
+      const onOther =
+        side === 'right' ? b.right <= mark.left : b.left >= mark.right;
       return {
-        reason:
-          b.right <= mark.left
-            ? 'writing on the left of the mark'
-            : 'mark touches the writing',
+        reason: onOther
+          ? `writing on the ${other} of the mark`
+          : 'mark touches the writing',
       };
     }
     indices.push(i);

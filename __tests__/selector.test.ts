@@ -400,27 +400,32 @@ describe('handlePenUp: device quirks', () => {
   });
 });
 
-describe('handlePenUp: margin ┘ to erase', () => {
+describe('handlePenUp: margin ┌ ┘ to erase', () => {
   beforeEach(() => {
     nextNum = 1;
   });
 
-  /** Four letters side by side, 40 px apart, top at y=top. */
+  /** Four letters side by side (x 100..250), 40 px apart, top at y=top. */
   function row(top = 500): PageElement[] {
     return [100, 140, 180, 220].map(x => el(letter(x, top)));
   }
 
-  /** A 40 px reverse L in the margin, level with the row at y=500. */
-  const markPoints = [
-    ...straight({x: 80, y: 500}, {x: 80, y: 540}, 10),
-    ...straight({x: 80, y: 540}, {x: 40, y: 540}, 10).slice(1),
+  /** A 40 px ┌ in the left margin, level with the row at y=500. */
+  const leftMark = [
+    ...straight({x: 80, y: 500}, {x: 40, y: 500}, 10),
+    ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10).slice(1),
+  ];
+  /** A 40 px ┘ in the right margin, level with the row at y=500. */
+  const rightMark = [
+    ...straight({x: 340, y: 500}, {x: 340, y: 540}, 10),
+    ...straight({x: 340, y: 540}, {x: 300, y: 540}, 10).slice(1),
   ];
 
-  it('erases the line of writing next to the ┘, and the ┘', async () => {
+  it('┌ in the left margin erases the line on its right, and itself', async () => {
     const above = row(420);
     const letters = row(500);
     const below = row(580);
-    const mark = el(markPoints);
+    const mark = el(leftMark);
     const host = fakeHost([...above, ...letters, ...below, mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -433,6 +438,22 @@ describe('handlePenUp: margin ┘ to erase', () => {
     expect(host.remembered).toEqual([letters]);
   });
 
+  it('┘ in the right margin erases the line on its left, and itself', async () => {
+    const above = row(420);
+    const letters = row(500);
+    const mark = el(rightMark);
+    const host = fakeHost([...above, ...letters, mark]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 4});
+    expect(await host.getPageElements('', 3)).toEqual(above);
+    expect(lines.join('\n')).toContain('erasing the line on its left');
+  });
+
   it('takes the whole line: dots, far words, touching strokes', async () => {
     const letters = row(500);
     const dot = el([
@@ -441,7 +462,7 @@ describe('handlePenUp: margin ┘ to erase', () => {
     ]);
     const farWord = el(word(600, 512));
     const descender = el(straight({x: 245, y: 541}, {x: 242, y: 600}, 6));
-    const mark = el(markPoints);
+    const mark = el(leftMark);
     const host = fakeHost([...letters, dot, farWord, descender, mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -460,7 +481,8 @@ describe('handlePenUp: margin ┘ to erase', () => {
 
     expect(await handlePenUp([letterL], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: '┘ on the page: not a reverse L (corner must be bottom right)',
+      reason:
+        'mark on the page: corner must be top left (┌) or bottom right (┘)',
     });
     expect(host.deleted).toEqual([]);
   });
@@ -481,34 +503,29 @@ describe('handlePenUp: margin ┘ to erase', () => {
 
   it('learns whether pen-up copies are in page coordinates', async () => {
     const learn = jest.fn();
-    const mark = el(markPoints);
+    const mark = el(leftMark);
     await handlePenUp([mark], fakeHost([...row(500), mark]), DEFAULT_CONFIG, {
       learnPenUpIsPage: learn,
     });
     expect(learn).toHaveBeenLastCalledWith(true);
 
     const rotated = el(
-      markPoints.map(p => ({x: 9000 - p.y * 10, y: p.x * 10})),
-      {
-        uuid: 'pen-up',
-        numInPage: 0,
-      },
+      leftMark.map(p => ({x: 9000 - p.y * 10, y: p.x * 10})),
+      {uuid: 'pen-up', numInPage: 0},
     );
-    const stored = el(markPoints);
+    const stored = el(leftMark);
     await handlePenUp(
       [rotated],
       fakeHost([...row(500), stored]),
       DEFAULT_CONFIG,
-      {
-        learnPenUpIsPage: learn,
-      },
+      {learnPenUpIsPage: learn},
     );
     expect(learn).toHaveBeenLastCalledWith(false);
   });
 
-  it('leaves a ┘ with writing on its left alone', async () => {
+  it('leaves a ┌ with writing on its left alone', async () => {
     const before = el(word(0, 515, 25));
-    const mark = el(markPoints);
+    const mark = el(leftMark);
     const host = fakeHost([before, ...row(500), mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -518,8 +535,21 @@ describe('handlePenUp: margin ┘ to erase', () => {
     expect(host.deleted).toEqual([]);
   });
 
-  it('leaves a ┘ with nothing next to it as ink', async () => {
-    const mark = el(markPoints);
+  it('leaves a ┘ in the left margin alone (writing on its right)', async () => {
+    const leftCorner = el([
+      ...straight({x: 80, y: 500}, {x: 80, y: 540}, 10),
+      ...straight({x: 80, y: 540}, {x: 40, y: 540}, 10).slice(1),
+    ]);
+    const host = fakeHost([...row(500), leftCorner]);
+
+    expect(await handlePenUp([leftCorner], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'writing on the right of the mark',
+    });
+  });
+
+  it('leaves a mark with nothing next to it as ink', async () => {
+    const mark = el(leftMark);
     const host = fakeHost([...row(700), mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -528,17 +558,17 @@ describe('handlePenUp: margin ┘ to erase', () => {
     });
   });
 
-  it('says in the trace why a stroke is not a ┘', async () => {
+  it('says in the trace why a stroke is not a mark', async () => {
     const stroke = el(word(100, 100, 200));
     const lines: string[] = [];
     await handlePenUp([stroke], fakeHost([stroke]), DEFAULT_CONFIG, {
       trace: l => lines.push(l),
     });
-    expect(lines.join('\n')).toContain('┘ check:');
+    expect(lines.join('\n')).toContain('mark check:');
   });
 
   it('respects the per-gesture switches', async () => {
-    const mark = el(markPoints);
+    const mark = el(leftMark);
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([...row(), mark, loop]);
     const off = {gestures: {loopSelect: false, marginErase: false}};

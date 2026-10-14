@@ -182,9 +182,23 @@ describe('checkCornerMark', () => {
     {x: 40, y: 540},
   ]);
 
-  it('recognises a reverse L and returns its box', () => {
+  it('recognises a ┘ (corner bottom right) and returns its box', () => {
     expect(checkCornerMark(mark)).toEqual({
       box: {left: 39.3, top: 500, right: 80.7, bottom: 540},
+      kind: 'bottomRight',
+    });
+  });
+
+  it('recognises a ┌ (corner top left), drawn either way', () => {
+    // Across the top from (80, 500) to the corner (40, 500), then down.
+    const topLeft = path([
+      {x: 80, y: 500},
+      {x: 40, y: 500},
+      {x: 40, y: 540},
+    ]);
+    expect(checkCornerMark(topLeft)).toMatchObject({kind: 'topLeft'});
+    expect(checkCornerMark([...topLeft].reverse())).toMatchObject({
+      kind: 'topLeft',
     });
   });
 
@@ -208,7 +222,7 @@ describe('checkCornerMark', () => {
       {x: 70, y: 540},
     ]);
     expect(checkCornerMark(letterL)).toEqual({
-      reason: 'not a reverse L (corner must be bottom right)',
+      reason: 'corner must be top left (┌) or bottom right (┘)',
     });
     const seven = path([
       {x: 40, y: 500},
@@ -285,6 +299,20 @@ describe('findWritingLine', () => {
       box(100, 420), // line above
     ];
     expect(findWritingLine(mark, boxes)).toEqual({indices: [0, 1, 2]});
+  });
+
+  it('takes the strokes on the left of a right-margin mark', () => {
+    const right = {left: 400, top: 500, right: 440, bottom: 540};
+    const boxes = [box(100, 500), box(300, 505), box(100, 580)];
+    expect(findWritingLine(right, boxes, undefined, 'left')).toEqual({
+      indices: [0, 1],
+    });
+    expect(
+      findWritingLine(right, [box(100, 500), box(500, 500)], undefined, 'left'),
+    ).toEqual({reason: 'writing on the right of the mark'});
+    expect(findWritingLine(right, [box(380, 500)], undefined, 'left')).toEqual({
+      reason: 'mark touches the writing',
+    });
   });
 
   it('refuses when there is writing on the left of the mark', () => {

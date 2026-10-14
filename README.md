@@ -5,8 +5,9 @@ A Supernote plugin for NOTE files, with two pen gestures:
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
-- **Margin ┘ to erase:** draw a small reverse L (┘) in the left margin,
-  level with a line of writing, and that whole line is erased, with the mark.
+- **Margin mark to erase:** draw a small ┌ in the left margin, or a ┘ in the
+  right margin, level with a line of writing, and that whole line is erased,
+  with the mark.
 
 Built with the official plugin framework (React Native 0.79.2,
 `sn-plugin-lib` 0.2.3) following https://docs.supernote.com/en.
@@ -35,29 +36,32 @@ Loop to select:
 - If the loop encloses nothing, it stays on the page as normal ink, so
   drawing an "O" or a circle on empty paper still works.
 
-Margin ┘ to erase:
+Margin mark to erase:
 
-- Draw a reverse L in one stroke: down, then left (or right, then up). Both
-  legs roughly straight, 15–250 px, the shorter at least a quarter of the
-  longer, meeting at 60–120°, leaning at most 30° off vertical/horizontal,
-  with the corner at the bottom right. A written "L", "7" or "4" has its
-  corner elsewhere and is left alone. If a ┘ is not recognised, the plugin
-  screen says why.
+- Left margin: a ┌ (across the top, then down; or up, then right) erases the
+  line on its right. Right margin: a ┘ (down, then left; or right, then up)
+  erases the line on its left. One stroke each, like brackets around the
+  line.
+- Both legs roughly straight, 15–250 px, the shorter at least a quarter of the
+  longer, meeting at 60–120°, leaning at most 30° off vertical/horizontal. A
+  written "L", "7" or "4" has its corner elsewhere and is left alone. If a
+  mark is not recognised, the plugin screen says why.
 - The line it erases: every stroke whose vertical centre is level with the
-  ┘ (within 0.9 × its height, or at least 30 px), to its right, however far:
-  dots and accents included. Strokes touching those go too (descenders,
-  joined letters).
-- It only triggers in the margin: if anything level with the ┘ is on its
-  left, or overlaps it (a written "x"), nothing happens. A ┘ with no writing
-  next to it stays as ink.
+  mark (within 0.9 × its height, or at least 30 px), on its writing side,
+  however far: dots and accents included. Strokes touching those go too
+  (descenders, joined letters).
+- There is no fixed margin zone: the mark only has to be beyond the line.
+  If anything level with it is on its other side (outside the line), or if
+  it overlaps the writing, nothing happens. A mark with no writing next to
+  it stays as ink.
 - The erased strokes may show again faintly where the pen passes, for a few
   seconds (the device does not repaint after deletions outside a lasso). This
   is only on screen: they are gone from the note.
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
 - Nothing is read from or saved to the note unless the stroke has the shape
-  of a ┘. From the first gesture on, the plugin also learns whether strokes
-  arrive in page coordinates; if so, it checks the ┘'s orientation up front,
-  so an "L" never costs a save.
+  of a corner. From the first gesture on, the plugin also learns whether
+  strokes arrive in page coordinates; if so, it checks which corner it is up
+  front, so an "L" never costs a save.
 - **Restore last erase** on the plugin screen puts the last erased line
   back (same note; the plugin keeps it until the next erase).
 
@@ -75,9 +79,8 @@ Margin ┘ to erase:
 - **The selection is a rectangle.** `lassoElements` only accepts a rectangle,
   so the selection is the bounding box of everything the loop enclosed.
   Strokes that sit inside that box but outside your loop are selected too.
-- **Circling for emphasis, or a ┘ at the start of a line.** Circling a word
-  selects it, and a ┘ drawn in the margin before a line of writing erases
-  that line. Use the marker for those, or turn a gesture off from the
+- **Circling for emphasis, or a corner next to a line.** Circling a word
+  selects it, and a ┌ before a line or a ┘ after it erases that line. Use the marker for those, or turn a gesture off from the
   plugin screen.
 
 ## Using it
@@ -87,7 +90,7 @@ Margin ┘ to erase:
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
-4. Draw a loop around some writing, or a ┘ in the margin next to a line.
+4. Draw a loop around some writing, or a ┌ before / ┘ after a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
@@ -111,11 +114,11 @@ Layout:
 | --- | --- |
 | `index.js` | Plugin entry: `PluginManager.init()`, buttons, starts the listener |
 | `App.tsx` | Plugin screen (switches, restore, file access, last result) |
-| `src/geometry.ts` | Loop and ┘ detection, containment, line of writing (pure) |
+| `src/geometry.ts` | Loop and ┌ ┘ detection, containment, line of writing (pure) |
 | `src/selector.ts` | Gesture flows on pen-up, against a `Host` interface (pure) |
 | `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, erase restore |
 | `src/plugin.ts` | Wires the pen-up event to the selector with a timeout |
-| `src/config.ts` | Thresholds (pen types, loop tolerance, ┘ and line rules) |
+| `src/config.ts` | Thresholds (pen types, loop tolerance, mark and line rules) |
 
 `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
 will treat it as a different plugin. Bump `versionCode` for each release.
