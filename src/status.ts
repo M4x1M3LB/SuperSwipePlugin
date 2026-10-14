@@ -10,6 +10,7 @@ let gestures: Gestures = {
   loopSelect: true,
   marginErase: true,
   lineSelect: true,
+  barSelect: true,
   screenRefresh: true,
 };
 let lastOutcome: Outcome | null = null;

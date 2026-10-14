@@ -79,7 +79,12 @@ export function startGestures(): void {
       status.countPenUp();
       const gestures = status.gestures();
       if (
-        !(gestures.loopSelect || gestures.marginErase || gestures.lineSelect) ||
+        !(
+          gestures.loopSelect ||
+          gestures.marginErase ||
+          gestures.lineSelect ||
+          gestures.barSelect
+        ) ||
         !Array.isArray(msg)
       ) {
         return;

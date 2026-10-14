@@ -103,6 +103,7 @@ function fakeHost(
       host.lassoed.push(rect);
       return true;
     },
+    penDownCount: () => 0,
     askAboveOrBelow: async () => {
       host.calls.push('ask');
       return 'below';
@@ -848,5 +849,153 @@ describe('handlePenUp: line to select above or below', () => {
 
     await handlePenUp([dash], host, DEFAULT_CONFIG);
     expect(reads).toBe(0);
+  });
+});
+
+describe('handlePenUp: margin bar to select a block', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  /** Lines of four letters (x 100..250), 80 px apart. */
+  const rows = (tops: number[], x = 100) =>
+    tops.flatMap(t => [0, 40, 80, 120].map(dx => el(letter(x + dx, t))));
+  const bar = (x: number, top = 495, bottom = 705) =>
+    el(straight({x, y: top}, {x: x + 3, y: bottom}));
+
+  it('in the left margin, selects the lines beside it and removes it', async () => {
+    const before = rows([420]);
+    const block = rows([500, 580, 660]);
+    const after = rows([740]);
+    const mark = bar(70);
+    const host = fakeHost([...before, ...block, ...after, mark]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({kind: 'selected', count: 12});
+    expect(host.deleted).toEqual([[21]]);
+    expect(host.calls).toEqual(['delete', 'lasso']);
+    const rect = host.lassoed[0];
+    expect(rect.left).toBeLessThanOrEqual(70); // over where the bar was
+    expect(rect.top).toBeGreaterThan(470);
+    expect(rect.bottom).toBeLessThan(720);
+    expect(lines).toContain('block on the right: 12 element(s)');
+  });
+
+  it('in the right margin, selects the lines on its left', async () => {
+    const block = rows([500, 580, 660]);
+    const mark = bar(300);
+    const host = fakeHost([...block, mark]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({
+      kind: 'selected',
+      count: 12,
+    });
+  });
+
+  it('takes a [ drawn bottom to top', async () => {
+    const block = rows([500, 580, 660]);
+    const bracket = el([
+      ...straight({x: 90, y: 705}, {x: 70, y: 705}, 6),
+      ...straight({x: 70, y: 705}, {x: 72, y: 495}),
+      ...straight({x: 72, y: 495}, {x: 90, y: 495}, 6),
+    ]);
+    const host = fakeHost([...block, bracket]);
+
+    expect(await handlePenUp([bracket], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 12,
+    });
+  });
+
+  it('leaves a column divider, a bar touching writing and a short bar as ink', async () => {
+    const columns = [...rows([500, 580, 660]), ...rows([500, 580, 660], 400)];
+    const divider = bar(300);
+    const host = fakeHost([...columns, divider]);
+    expect(await handlePenUp([divider], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'writing on both sides of the bar',
+    });
+
+    const block = rows([500, 580, 660]);
+    const touching = bar(98);
+    const host2 = fakeHost([...block, touching]);
+    expect(await handlePenUp([touching], host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'bar touches the writing',
+    });
+
+    const two = rows([500, 580]);
+    const short = bar(70, 500, 605); // 105 px: under 6 % of 1872
+    const host3 = fakeHost([...two, short]);
+    expect(await handlePenUp([short], host3, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'bar too short (105 px, needs 112)',
+    });
+    for (const h of [host, host2, host3]) {
+      expect(h.deleted).toEqual([]);
+    }
+  });
+
+  it('never reads the page for an "l" or a "1"', async () => {
+    const l = el(straight({x: 300, y: 500}, {x: 302, y: 560}));
+    const host = fakeHost([l]);
+    let reads = 0;
+    host.getPageElements = async () => {
+      reads++;
+      return [l];
+    };
+
+    expect(await handlePenUp([l], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'not a gesture',
+    });
+    expect(reads).toBe(0);
+  });
+
+  it('leaves a bar as ink when more writing follows it', async () => {
+    const block = rows([500, 580, 660]);
+    const mark = bar(70);
+    const label = el(letter(20, 600));
+    const host = fakeHost([...block, mark, label]);
+
+    expect(await handlePenUp([mark, label], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'bar followed by more writing',
+    });
+
+    let downs = 0;
+    const block2 = rows([500, 580, 660]);
+    const host2 = fakeHost([...block2, bar(70)]);
+    host2.penDownCount = () => downs;
+    host2.waitForPenUp = async () => {
+      downs++; // the pen touched the screen again meanwhile
+    };
+    const mark2 = (await host2.getPageElements('', 3)).slice(-1)[0];
+    expect(await handlePenUp([mark2], host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'kept writing after the bar',
+    });
+    expect(host2.deleted).toEqual([]);
+  });
+
+  it('can be switched off', async () => {
+    const block = rows([500, 580, 660]);
+    const mark = bar(70);
+    const host = fakeHost([...block, mark]);
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        gestures: {loopSelect: true, marginErase: true, barSelect: false},
+      }),
+    ).toEqual({kind: 'ignored', reason: 'not a gesture'});
   });
 });

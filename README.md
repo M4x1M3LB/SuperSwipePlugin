@@ -1,6 +1,6 @@
 # SuperSwipe — pen gestures for Supernote notes
 
-A Supernote plugin for NOTE files, with three pen gestures:
+A Supernote plugin for NOTE files, with four pen gestures:
 
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
@@ -8,6 +8,9 @@ A Supernote plugin for NOTE files, with three pen gestures:
 - **Line to select:** draw a straight horizontal line (a few words long or
   more) clear of the writing; everything above or below it is selected.
   With writing on both sides, the device asks which.
+- **Margin bar to select:** draw a vertical stroke (|, [ or a gentle ( )
+  in the margin beside some lines, from the first to the last; that block
+  of writing is selected and the bar disappears.
 - **Margin wave to erase:** draw a sideways wave with three bounces or more
   (∿∿, a tilde with an extra bounce) in the margin next to a line of
   writing, left or right, and that whole line is erased, with the wave.
@@ -72,6 +75,28 @@ Line to select:
   Longer underlines and strike-throughs are checked against the page
   (which clears its undo history) and stay ink.
 
+Margin bar to select:
+
+- One roughly vertical stroke: it may lean up to 20°, bow or wobble up to
+  15 % of its length, and have small hooks or "[" arms at its ends (12 % of
+  its length is ignored at each end). At least 1.5 lines tall (6 % of the
+  page height, 100 px minimum), at most ¾ of the page. Drawn up or down.
+- It selects the writing level with it (vertical centre within the bar,
+  give or take half a letter height, so i-dots and a bar stopping a little
+  short are fine), on the side where the writing is, from the nearest
+  writing outwards, up to the first empty gutter wider than 10 % of the
+  page: on a two-column page, only the nearest column.
+- It stays ink when: it touches or runs through the writing, there is
+  writing level with it on both sides (a column divider), the nearest
+  writing is closer than 8 px or further than 15 % of the page width, the
+  writing beside it covers less than half its height (an axis with a
+  label), a tall bracket or border faces it (a matrix, a table), more
+  writing follows it in the same burst of strokes, or the pen touches the
+  screen again before it is removed (a brace followed by its label).
+- A stroke shorter than 100 px never causes the page to be read, so "l",
+  "1" and "|" in your writing cost nothing.
+- No dialog: the bar is removed and the selection appears at once.
+
 Margin wave to erase:
 
 - One stroke that runs sideways (left to right or right to left, never
@@ -121,21 +146,22 @@ Margin wave to erase:
   true/false") in case they come out swapped.
 - **Gestures that are also ordinary ink.** Circling a word selects it, a
   horizontal line a few words long clear of the writing (a divider)
-  selects, and a wave beside a line erases it. A wavy word (such as a cursive "mm") written alone at the end of a
+  selects, a bar or bracket in the margin beside some lines (sidelining)
+  selects them, and a wave beside a line erases it. A wavy word (such as a cursive "mm") written alone at the end of a
   line, after a wide gap, can be taken for the wave: **Restore last erase**
   brings the line back. Use the marker for those, or turn a gesture off
   from the plugin screen.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.23.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.24.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
-4. Draw a loop around some writing, a line under a section, or a wave
-   beside a line.
+4. Draw a loop around some writing, a line under a section, a bar in the
+   margin beside a paragraph, or a wave beside a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
@@ -160,11 +186,11 @@ Layout:
 | --- | --- |
 | `index.js` | Plugin entry: `PluginManager.init()`, buttons, starts the listener |
 | `App.tsx` | Plugin screen (switches, restore, file access, last result) |
-| `src/geometry.ts` | Loop, line and wave detection, containment, line of writing (pure) |
+| `src/geometry.ts` | Loop, line, bar and wave detection, the block beside a bar, containment, line of writing (pure) |
 | `src/selector.ts` | Gesture flows on pen-up, against a `Host` interface (pure) |
 | `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, dialog, erase restore |
 | `src/plugin.ts` | Wires the pen-up event to the selector, queues strokes while busy |
-| `src/config.ts` | Thresholds (pen types, loop, line and wave rules) |
+| `src/config.ts` | Thresholds (pen types, loop, line, bar and wave rules) |
 | `src/status.ts` | State shared with the plugin screen: switches, last result, trace, recent strokes |
 
 `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device

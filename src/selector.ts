@@ -9,6 +9,8 @@
  * - Line to select: a straight horizontal line, a few words long or more,
  *   clear of the writing, selects everything above or below it (asking
  *   which when there is writing on both sides).
+ * - Margin bar to select: a vertical stroke in the margin beside some lines
+ *   selects the block of writing level with it.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -20,6 +22,8 @@ import {
   boundingBox,
   checkClosedLoop,
   checkStraightLine,
+  checkVerticalBar,
+  findBlockBesideBar,
   distance,
   findClosedLoop,
   checkWave,
@@ -75,6 +79,8 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /** How many times the pen has touched the screen so far. */
+  penDownCount(): number;
   /** Ask the user which side of a line to select; null if unanswered. */
   askAboveOrBelow(): Promise<'above' | 'below' | null>;
   /**
@@ -92,6 +98,7 @@ export interface Gestures {
   loopSelect: boolean;
   marginErase: boolean;
   lineSelect?: boolean;
+  barSelect?: boolean;
   /** Repaint the page after an erase (against ghosting). */
   screenRefresh?: boolean;
 }
@@ -165,7 +172,10 @@ export async function handlePenUp(
   let gesture: PageElement | null = null;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
-  let isLine = false;
+  // A line or a bar: the pen-up copy may be turned a quarter, so which one
+  // is decided on the page copy.
+  let isStraight = false;
+  const downsAtStart = host.penDownCount();
   for (let i = ink.length - 1; i >= 0 && !gesture; i--) {
     const candidate = ink[i];
     const pts = await candidate.outline();
@@ -188,30 +198,43 @@ export async function handlePenUp(
       }
       trace(`  loop check: ${loop.reason}`);
     }
+    // Long enough, so a dash, a "t" bar or an "l" never makes us read the
+    // page. Measured in page px: a pen-up copy in the digitiser's units
+    // (EMR, larger than any page) is scaled down first, and turned back a
+    // quarter (the SDK's PointUtils: page x and y are EMR y and x).
+    const unit = penUpUnit(pts, config);
+    const upright = unit === 1 ? pts : pts.map(p => ({x: p.y, y: p.x}));
+    if (gestures.barSelect ?? true) {
+      const bar = checkVerticalBar(upright, config.bar);
+      const length = 'box' in bar ? (bar.box.bottom - bar.box.top) / unit : 0;
+      if ('box' in bar && length >= config.barMinPenUpLength) {
+        [gesture, points, isStraight] = [candidate, pts, true];
+        break;
+      }
+      trace(
+        `  bar check: ${
+          'box' in bar
+            ? `too short (${Math.round(length)} px, needs ${
+                config.barMinPenUpLength
+              })`
+            : bar.reason
+        }`,
+      );
+    }
     if (gestures.lineSelect ?? true) {
-      // Long enough, so a dash or a "t" bar never makes us read the page.
-      // Measured in page px: a pen-up copy in the digitiser's units (EMR,
-      // larger than any page) is scaled down first.
-      const unit = penUpUnit(pts, config);
-      const line = checkStraightLine(pts, config.straightLine);
-      const swapped = pts.map(p => ({x: p.y, y: p.x}));
-      const swappedLine = checkStraightLine(swapped, config.straightLine);
-      const found =
-        'from' in line ? line : 'from' in swappedLine ? swappedLine : null;
-      const length = found ? distance(found.from, found.to) / unit : 0;
-      if (found && length >= config.lineMinPenUpLength) {
-        [gesture, points, isLine] = [candidate, pts, true];
+      const line = checkStraightLine(upright, config.straightLine);
+      const length = 'from' in line ? distance(line.from, line.to) / unit : 0;
+      if ('from' in line && length >= config.lineMinPenUpLength) {
+        [gesture, points, isStraight] = [candidate, pts, true];
         break;
       }
       trace(
         `  line check: ${
-          found
+          'from' in line
             ? `too short (${Math.round(length)} px, needs ${
                 config.lineMinPenUpLength
               })`
-            : 'reason' in line
-            ? line.reason
-            : ''
+            : line.reason
         }`,
       );
     }
@@ -220,7 +243,11 @@ export async function handlePenUp(
     return {kind: 'ignored', reason: 'not a gesture'};
   }
   trace(
-    polygon ? 'shape: closed loop' : isLine ? 'shape: line' : 'shape: wave',
+    polygon
+      ? 'shape: closed loop'
+      : isStraight
+      ? 'shape: line or bar'
+      : 'shape: wave',
   );
 
   const path = await host.getCurrentFilePath();
@@ -270,12 +297,21 @@ export async function handlePenUp(
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
   };
-  if (isLine) {
+  if (isStraight) {
     const line = checkStraightLine(stored, config.straightLine);
-    if ('reason' in line) {
-      return {kind: 'ignored', reason: `line on the page: ${line.reason}`};
+    if ('from' in line && (gestures.lineSelect ?? true)) {
+      return selectBesideLine(ctx, stored, line, keepAlive);
     }
-    return selectBesideLine(ctx, stored, line, keepAlive);
+    const bar = checkVerticalBar(stored, config.bar);
+    if ('box' in bar && (gestures.barSelect ?? true)) {
+      return selectBesideBar(ctx, bar.box, downsAtStart);
+    }
+    return {
+      kind: 'ignored',
+      reason: `on the page, not a line (${
+        'reason' in line ? line.reason : 'switched off'
+      }) nor a bar (${'reason' in bar ? bar.reason : 'switched off'})`,
+    };
   }
   if (polygon) {
     const pagePolygon = findClosedLoop(stored, config.loop);
@@ -296,6 +332,13 @@ export async function handlePenUp(
     if (line && 'from' in line) {
       trace(`wave on the page: ${checked.reason}, trying a line`);
       return selectBesideLine(ctx, stored, line, keepAlive);
+    }
+    // Likewise a wobbly bar ("taller than wide" for a wave).
+    const bar =
+      gestures.barSelect ?? true ? checkVerticalBar(stored, config.bar) : null;
+    if (bar && 'box' in bar) {
+      trace(`wave on the page: ${checked.reason}, trying a bar`);
+      return selectBesideBar(ctx, bar.box, downsAtStart);
     }
     return {kind: 'ignored', reason: `wave on the page: ${checked.reason}`};
   }
@@ -383,6 +426,91 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
   return {kind: 'selected', count: boxes.length, rect};
+}
+
+/**
+ * Select the block of writing beside a margin bar: level with it, on its
+ * one side, out to the first empty gutter. The bar is removed.
+ */
+async function selectBesideBar(
+  ctx: Context,
+  bar: Box,
+  downsAtStart: number,
+): Promise<Outcome> {
+  const {host, config, path, page, stroke} = ctx;
+  const size = await host.getPageSize(path, page);
+  if (!size) {
+    return {kind: 'failed', reason: 'page size unavailable'};
+  }
+  const height = bar.bottom - bar.top;
+  const minHeight = Math.max(
+    config.barMinPx,
+    config.barMinHeightRatio * size.height,
+  );
+  ctx.trace(`bar: ${Math.round(height)} px tall at x ${Math.round(bar.left)}`);
+  if (height < minHeight) {
+    return {
+      kind: 'ignored',
+      reason: `bar too short (${Math.round(height)} px, needs ${Math.round(
+        minHeight,
+      )})`,
+    };
+  }
+  if (height > config.barMaxHeightRatio * size.height) {
+    return {kind: 'ignored', reason: 'bar too long (a page rule?)'};
+  }
+  // Writing after the bar means it was ink (a brace and its label).
+  if (
+    ctx.others.some(e => e.type === STROKE && e.numInPage > stroke.numInPage)
+  ) {
+    return {kind: 'ignored', reason: 'bar followed by more writing'};
+  }
+
+  const outline = await stroke.outline();
+  const outlines = await outlinesOf(ctx.others);
+  const boxes: Box[] = [];
+  const owners: number[] = [];
+  for (let i = 0; i < outlines.length; i++) {
+    if (outlines[i].length === 0) {
+      continue;
+    }
+    if (strokesTouch(outline, outlines[i], config.eraseTouchTolerance)) {
+      return {kind: 'ignored', reason: 'bar touches the writing'};
+    }
+    boxes.push(boundingBox(outlines[i]));
+    owners.push(i);
+  }
+  const block = findBlockBesideBar(bar, boxes, size.width, config.block);
+  if ('reason' in block) {
+    return {kind: 'ignored', reason: block.reason};
+  }
+  const chosen = block.indices.map(i => boxes[i]);
+  ctx.trace(`block on the ${block.side}: ${chosen.length} element(s)`);
+
+  const blocked = await checkBeforeEdit(ctx);
+  if (blocked) {
+    return blocked;
+  }
+  if (host.penDownCount() !== downsAtStart) {
+    return {kind: 'ignored', reason: 'kept writing after the bar'};
+  }
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
+    return {kind: 'failed', reason: 'could not remove the bar'};
+  }
+  ctx.trace('bar removed');
+  // Stretched over where the bar was, so the device repaints that strip:
+  // nothing level with the bar sits there.
+  const union = unionBoxes(chosen)!;
+  const stretched =
+    block.side === 'right'
+      ? {...union, left: Math.min(union.left, bar.left)}
+      : {...union, right: Math.max(union.right, bar.right)};
+  const rect = padAndClamp(stretched, config.lassoPadding, size);
+  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
+  if (!(await host.lassoRect(rect))) {
+    return {kind: 'failed', reason: 'could not create lasso selection'};
+  }
+  return {kind: 'selected', count: chosen.length, rect};
 }
 
 /**

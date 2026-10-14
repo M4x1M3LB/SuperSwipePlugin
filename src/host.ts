@@ -65,6 +65,7 @@ const PEN_STALE_MS = 1000;
  */
 export class PenTracker {
   private down = false;
+  private downs = 0;
   private lastEventAt = 0;
   private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
     [];
@@ -79,6 +80,7 @@ export class PenTracker {
         this.lastEventAt = Date.now();
         if (event.action === ACTION_DOWN) {
           this.down = true;
+          this.downs++;
         } else if (
           event.action === ACTION_UP ||
           event.action === ACTION_CANCEL
@@ -103,6 +105,11 @@ export class PenTracker {
       }
       return true;
     });
+  }
+
+  /** How many times the pen has touched the screen so far. */
+  downCount(): number {
+    return this.downs;
   }
 
   /** Has the pen stayed off the screen since `time` (Date.now() ms)? */
@@ -234,7 +241,7 @@ async function requestFileAccess(): Promise<boolean> {
     }
     const choice = await PluginManager.requestPermission(
       permission,
-      'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses or what lies above or below a line, and erase a line of writing next to a margin wave.',
+      'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses, what lies above or below a line or beside a margin bar, and erase a line of writing next to a margin wave.',
     );
     if (choice !== 1 && choice !== 2) {
       return false;
@@ -380,6 +387,10 @@ export function createHost(pen: PenTracker): DeviceHost {
         trace,
       );
       return reloaded !== null && reloaded !== false;
+    },
+
+    penDownCount() {
+      return pen.downCount();
     },
 
     async lassoRect(rect: Box) {

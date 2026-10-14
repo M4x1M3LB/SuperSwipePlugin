@@ -3,6 +3,9 @@ import {
   findClosedLoop,
   netTurning,
   checkStraightLine,
+  checkVerticalBar,
+  findBlockBesideBar,
+  trimEnds,
   checkWave,
   findWritingLine,
   strokesTouch,
@@ -267,6 +270,104 @@ describe('checkStraightLine', () => {
         ...line({x: 100, y: 8}, {x: 500, y: 8}),
       ]),
     ).toEqual({reason: 'not straight (goes back and forth)'});
+  });
+});
+
+describe('checkVerticalBar', () => {
+  it('accepts |, [ and a gentle (, drawn up or down', () => {
+    const bar = line({x: 70, y: 500}, {x: 72, y: 700});
+    expect(checkVerticalBar(bar)).toHaveProperty('box');
+    expect(checkVerticalBar([...bar].reverse())).toHaveProperty('box');
+    const bracket = [
+      ...line({x: 90, y: 500}, {x: 70, y: 500}, 8),
+      ...line({x: 70, y: 500}, {x: 70, y: 700}),
+      ...line({x: 70, y: 700}, {x: 90, y: 700}, 8),
+    ];
+    expect(checkVerticalBar(bracket)).toHaveProperty('box');
+    const paren = Array.from({length: 41}, (_, i) => ({
+      x: 80 - 20 * Math.sin((Math.PI * i) / 40),
+      y: 500 + 5 * i,
+    }));
+    expect(checkVerticalBar(paren)).toHaveProperty('box');
+  });
+
+  it('accepts a leaning, shaky bar', () => {
+    const shaky = line({x: 70, y: 500}, {x: 120, y: 700}).map((p, i) => ({
+      x: p.x + ((i * 7) % 9) - 4,
+      y: p.y,
+    }));
+    expect(checkVerticalBar(shaky)).toHaveProperty('box');
+  });
+
+  it('rejects horizontal lines, L shapes and loops', () => {
+    expect(
+      checkVerticalBar(line({x: 0, y: 500}, {x: 300, y: 505})),
+    ).toMatchObject({reason: expect.stringContaining('not vertical')});
+    const l = [
+      ...line({x: 70, y: 500}, {x: 70, y: 700}),
+      ...line({x: 70, y: 700}, {x: 150, y: 700}, 15),
+    ];
+    expect(checkVerticalBar(l)).toHaveProperty('reason');
+    expect(checkVerticalBar(ellipse(100, 600, 30, 100))).toHaveProperty(
+      'reason',
+    );
+  });
+
+  it('trims the ends of a stroke', () => {
+    const trimmed = trimEnds(line({x: 0, y: 0}, {x: 0, y: 100}, 100), 0.1);
+    expect(trimmed[0].y).toBeCloseTo(10, 0);
+    expect(trimmed[trimmed.length - 1].y).toBeCloseTo(90, 0);
+  });
+});
+
+describe('findBlockBesideBar', () => {
+  const bar = {left: 68, top: 495, right: 72, bottom: 705};
+  const box = (left: number, top: number, w = 30, h = 40) => ({
+    left,
+    top,
+    right: left + w,
+    bottom: top + h,
+  });
+  /** Three lines of four words, 80 px apart, from x = left. */
+  const lines = (left: number, tops = [500, 580, 660]) =>
+    tops.flatMap(t => [0, 40, 80, 120].map(dx => box(left + dx, t)));
+
+  it('takes the lines level with the bar, on its side', () => {
+    const boxes = [box(100, 420), ...lines(100), box(100, 740)];
+    expect(findBlockBesideBar(bar, boxes, 1404)).toEqual({
+      indices: Array.from({length: 12}, (_, i) => i + 1),
+      side: 'right',
+    });
+  });
+
+  it('stops at an empty gutter (a second column)', () => {
+    const boxes = [...lines(100), ...lines(800)];
+    expect(findBlockBesideBar(bar, boxes, 1404)).toMatchObject({
+      indices: Array.from({length: 12}, (_, i) => i),
+    });
+  });
+
+  it('refuses dividers, bars in the text, axes and brackets', () => {
+    expect(findBlockBesideBar(bar, [...lines(100), box(0, 500)], 1404)).toEqual(
+      {
+        reason: 'writing on both sides of the bar',
+      },
+    );
+    expect(findBlockBesideBar(bar, [box(55, 580)], 1404)).toEqual({
+      reason: 'bar runs through the writing',
+    });
+    expect(findBlockBesideBar(bar, [box(100, 580)], 1404)).toEqual({
+      reason: 'too little writing beside the bar (an axis?)',
+    });
+    expect(
+      findBlockBesideBar(bar, [...lines(100), box(300, 495, 10, 210)], 1404),
+    ).toEqual({reason: 'a bracket or border faces the bar'});
+    expect(findBlockBesideBar(bar, [box(500, 580, 30, 160)], 1404)).toEqual({
+      reason: 'writing too far from the bar (428 px)',
+    });
+    expect(findBlockBesideBar(bar, [box(400, 1500)], 1404)).toEqual({
+      reason: 'no writing beside the bar',
+    });
   });
 });
 

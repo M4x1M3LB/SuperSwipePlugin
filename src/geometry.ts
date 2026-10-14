@@ -545,6 +545,179 @@ export function checkStraightLine(
   return a.x <= b.x ? {from: a, to: b} : {from: b, to: a};
 }
 
+export interface BarOptions {
+  /** Fraction of the path trimmed off each end (landing hooks, "[" arms). */
+  trimRatio: number;
+  /** Shape of what is left: within this of vertical, bow and wobble. */
+  core: StraightLineOptions;
+  /** The whole stroke's width over its height, at most ("[" arms included). */
+  maxWidthRatio: number;
+}
+
+export const DEFAULT_BAR_OPTIONS: BarOptions = {
+  trimRatio: 0.12,
+  core: {
+    minPoints: 5,
+    maxDeviation: 0.15,
+    maxPathRatio: 1.45,
+    maxTiltDegrees: 20,
+  },
+  maxWidthRatio: 0.45,
+};
+
+/** The stroke without `ratio` of its path length at each end. */
+export function trimEnds(points: Pt[], ratio: number): Pt[] {
+  const cut = pathLength(points) * ratio;
+  let from = 0;
+  for (let run = 0; from + 1 < points.length; from++) {
+    run += distance(points[from], points[from + 1]);
+    if (run > cut) {
+      break;
+    }
+  }
+  let to = points.length - 1;
+  for (let run = 0; to - 1 > from; to--) {
+    run += distance(points[to], points[to - 1]);
+    if (run > cut) {
+      break;
+    }
+  }
+  return points.slice(from, to + 1);
+}
+
+/**
+ * Is the stroke a vertical bar: "|", "[", "]" or a gentle "(", drawn up or
+ * down, leaning, bowing or wobbling a little? Returns its bounding box, or
+ * why not. Only ratios and angles, so it also works on the pen-up copy
+ * (callers try both axes there).
+ */
+export function checkVerticalBar(
+  points: Pt[],
+  options: BarOptions = DEFAULT_BAR_OPTIONS,
+): {box: Box} | {reason: string} {
+  const core = trimEnds(points, options.trimRatio);
+  // A vertical bar is a horizontal line with the axes swapped.
+  const swapped = core.map(p => ({x: p.y, y: p.x}));
+  const straight = checkStraightLine(swapped, options.core);
+  if ('reason' in straight) {
+    return {
+      reason: straight.reason.replace('not horizontal', 'not vertical'),
+    };
+  }
+  const box = boundingBox(points);
+  if (box.right - box.left > options.maxWidthRatio * (box.bottom - box.top)) {
+    return {reason: 'too wide for a bar'};
+  }
+  return {box};
+}
+
+export interface BlockOptions {
+  /** Nearest writing at least this far from the bar, in px... */
+  minGap: number;
+  /** ...and at most this fraction of the page width. */
+  maxFirstGapRatio: number;
+  /** A wider empty gutter, × page width, ends the block (a second column). */
+  maxChainGapRatio: number;
+  /** The selection must cover at least this much of the bar's height. */
+  minCoverage: number;
+}
+
+export const DEFAULT_BLOCK_OPTIONS: BlockOptions = {
+  minGap: 8,
+  maxFirstGapRatio: 0.15,
+  maxChainGapRatio: 0.1,
+  minCoverage: 0.5,
+};
+
+/**
+ * The block of writing beside a margin bar: indices of the boxes level with
+ * it, on its one side, from the nearest out to the first empty gutter.
+ * Refused (with a reason) when the bar runs through the writing, has
+ * writing on both sides, or does not look like it marks a block.
+ */
+export function findBlockBesideBar(
+  bar: Box,
+  boxes: Box[],
+  pageWidth: number,
+  options: BlockOptions = DEFAULT_BLOCK_OPTIONS,
+): {indices: number[]; side: 'left' | 'right'} | {reason: string} {
+  const height = bar.bottom - bar.top;
+  const centre = (b: Box) => (b.top + b.bottom) / 2;
+  // Level: centre within the bar, give or take half a letter, so a bar
+  // stopping a little short still takes the first and last line.
+  const inside = boxes.filter(
+    b => centre(b) >= bar.top && centre(b) <= bar.bottom,
+  );
+  const heights = inside.map(b => b.bottom - b.top).sort((a, b) => a - b);
+  const median = heights.length ? heights[Math.floor(heights.length / 2)] : 30;
+  const pad = Math.min(50, Math.max(15, median)) / 2;
+  const level = boxes
+    .map((b, i) => ({b, i}))
+    .filter(
+      ({b}) => centre(b) >= bar.top - pad && centre(b) <= bar.bottom + pad,
+    );
+
+  const right = level.filter(({b}) => b.left >= bar.right);
+  const left = level.filter(({b}) => b.right <= bar.left);
+  if (right.length + left.length < level.length) {
+    return {reason: 'bar runs through the writing'};
+  }
+  if (right.length > 0 && left.length > 0) {
+    return {reason: 'writing on both sides of the bar'};
+  }
+  if (right.length === 0 && left.length === 0) {
+    return {reason: 'no writing beside the bar'};
+  }
+  const side = right.length > 0 ? 'right' : 'left';
+  // Distance from the bar, along the side: near edge and far edge.
+  const near = (b: Box) =>
+    side === 'right' ? b.left - bar.right : bar.left - b.right;
+  const far = (b: Box) =>
+    side === 'right' ? b.right - bar.right : bar.left - b.left;
+  const group = (side === 'right' ? right : left).sort(
+    (a, b) => near(a.b) - near(b.b),
+  );
+
+  const first = near(group[0].b);
+  if (first < options.minGap) {
+    return {reason: `bar too close to the writing (${Math.round(first)} px)`};
+  }
+  if (first > options.maxFirstGapRatio * pageWidth) {
+    return {reason: `writing too far from the bar (${Math.round(first)} px)`};
+  }
+  const taken: {b: Box; i: number}[] = [];
+  let reach = 0;
+  for (const g of group) {
+    if (
+      taken.length > 0 &&
+      near(g.b) - reach > options.maxChainGapRatio * pageWidth
+    ) {
+      break;
+    }
+    taken.push(g);
+    reach = Math.max(reach, far(g.b));
+  }
+
+  const union = unionBoxes(taken.map(t => t.b))!;
+  if (union.bottom - union.top < options.minCoverage * height) {
+    return {reason: 'too little writing beside the bar (an axis?)'};
+  }
+  // A bracket or border facing the bar: a closing matrix bracket, a table.
+  const facing = taken.some(({b}) => {
+    const h = b.bottom - b.top;
+    const overlap = Math.min(b.bottom, bar.bottom) - Math.max(b.top, bar.top);
+    return (
+      h >= 0.6 * height &&
+      b.right - b.left <= 0.35 * h &&
+      overlap >= 0.6 * height
+    );
+  });
+  if (facing) {
+    return {reason: 'a bracket or border faces the bar'};
+  }
+  return {indices: taken.map(t => t.i).sort((a, b) => a - b), side};
+}
+
 export interface WritingLineOptions {
   /**
    * Strokes belong to the line next to the mark when their vertical centre

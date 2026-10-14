@@ -59,14 +59,16 @@ function App(): React.JSX.Element {
         With a pen (not the marker): draw a closed loop around strokes to
         lasso-select them. A straight horizontal line, a few words long or more
         and clear of the writing, selects what is above or below it (you are
-        asked which when there is writing on both sides). To erase a line of
-        writing, draw a sideways wave with three bounces or more (∿∿, a tilde
-        with an extra bounce) in the margin next to it, left or right, leaving a
-        small gap.
+        asked which when there is writing on both sides). A vertical bar in the
+        margin beside some lines selects that block. To erase a line of writing,
+        draw a sideways wave with three bounces or more (∿∿, a tilde with an
+        extra bounce) in the margin next to it, left or right, leaving a small
+        gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
       <Toggle label="Line to select above/below" name="lineSelect" />
+      <Toggle label="Margin bar to select a block" name="barSelect" />
       <Toggle label="Margin wave to erase" name="marginErase" />
       <Toggle label="Refresh screen after an erase" name="screenRefresh" />
 

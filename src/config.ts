@@ -1,8 +1,12 @@
 import {
+  DEFAULT_BAR_OPTIONS,
+  DEFAULT_BLOCK_OPTIONS,
   DEFAULT_LOOP_OPTIONS,
   DEFAULT_STRAIGHT_LINE_OPTIONS,
   DEFAULT_WAVE_OPTIONS,
   DEFAULT_WRITING_LINE_OPTIONS,
+  type BarOptions,
+  type BlockOptions,
   type LoopOptions,
   type StraightLineOptions,
   type WaveOptions,
@@ -33,6 +37,17 @@ export interface SelectorConfig {
   maxPagePx: number;
   /** ...and EMR units per page px, to measure it (from the SDK's PointUtils). */
   emrPerPx: number;
+  /** The margin bar: a roughly vertical stroke ("|", "[", gentle "("). */
+  bar: BarOptions;
+  /** Which writing beside a bar is its block. */
+  block: BlockOptions;
+  /** Shortest bar worth reading the page for, in page px. */
+  barMinPenUpLength: number;
+  /** A bar is at least this tall, in px, and this × the page height... */
+  barMinPx: number;
+  barMinHeightRatio: number;
+  /** ...and at most this × the page height (longer: a page rule). */
+  barMaxHeightRatio: number;
   /** Which strokes form the line of writing next to the wave. */
   writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
@@ -68,6 +83,12 @@ export const DEFAULT_CONFIG: SelectorConfig = {
   lineMinPenUpLength: 168,
   maxPagePx: 3500,
   emrPerPx: 8.45,
+  bar: DEFAULT_BAR_OPTIONS,
+  block: DEFAULT_BLOCK_OPTIONS,
+  barMinPenUpLength: 100,
+  barMinPx: 100,
+  barMinHeightRatio: 0.06,
+  barMaxHeightRatio: 0.75,
   writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],
