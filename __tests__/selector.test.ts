@@ -51,7 +51,6 @@ function el(points: Pt[], overrides: Partial<PageElement> = {}): PageElement {
 interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
-  refreshed: number;
   remembered: PageElement[][];
 }
 
@@ -65,7 +64,6 @@ function fakeHost(
   const host: FakeHost = {
     deleted: [],
     lassoed: [],
-    refreshed: 0,
     remembered: [],
     getCurrentFilePath: async () => '/storage/emulated/0/Note/demo.note',
     getCurrentPageNum: async () => 3,
@@ -94,10 +92,6 @@ function fakeHost(
     },
     lassoRect: async rect => {
       host.lassoed.push(rect);
-      return true;
-    },
-    refreshPage: async () => {
-      host.refreshed++;
       return true;
     },
     release: () => {},
@@ -258,7 +252,7 @@ describe('handlePenUp', () => {
     expect(order).toEqual(['wait', 'delete']);
   });
 
-  it('refreshes the page when the lasso cannot be created', async () => {
+  it('reports a failure when the lasso cannot be created', async () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop], {
       lassoRect: async () => false,
@@ -267,7 +261,6 @@ describe('handlePenUp', () => {
     expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toMatchObject({
       kind: 'failed',
     });
-    expect(host.refreshed).toBe(1);
   });
 });
 
@@ -311,24 +304,6 @@ describe('handlePenUp: loop range', () => {
     expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toMatchObject({
       kind: 'selected',
     });
-  });
-
-  it('repaints the page after removing the loop, before selecting', async () => {
-    const order: string[] = [];
-    const loop = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([el(word(480, 500)), loop], {
-      refreshPage: async () => {
-        order.push('repaint');
-        return true;
-      },
-      lassoRect: async () => {
-        order.push('lasso');
-        return true;
-      },
-    });
-
-    await handlePenUp([loop], host, DEFAULT_CONFIG);
-    expect(order).toEqual(['repaint', 'lasso']);
   });
 });
 
@@ -464,7 +439,6 @@ describe('handlePenUp: margin ✕ to erase', () => {
     expect(host.deleted).toEqual([[14, 13, 8, 7, 6, 5]]);
     expect(await host.getPageElements('', 3)).toEqual([...above, ...below]);
     expect(host.remembered).toEqual([letters]);
-    expect(host.refreshed).toBe(1);
   });
 
   it('takes the whole line: dots, far words, touching strokes', async () => {
@@ -507,6 +481,20 @@ describe('handlePenUp: margin ✕ to erase', () => {
       kind: 'ignored',
       reason: 'no writing next to the mark',
     });
+  });
+
+  it('says in the trace why a stroke pair is not a ✕', async () => {
+    const first = el(down);
+    const second = el(straight({x: 40, y: 505}, {x: 80, y: 535}, 12));
+    const host = fakeHost([...row(500), first, second]);
+    const lines: string[] = [];
+
+    await handlePenUp([second], host, DEFAULT_CONFIG, {
+      previous: {points: down, at: 0},
+      now: 100,
+      trace: l => lines.push(l),
+    });
+    expect(lines.join('\n')).toContain('✕ check: strokes too parallel');
   });
 
   it('needs both strokes within 2 seconds', async () => {

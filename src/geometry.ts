@@ -259,9 +259,9 @@ export interface LineOptions {
 export const MARK_STROKE_OPTIONS: LineOptions = {
   minPoints: 3,
   minLength: 15,
-  maxPathRatio: 1.3,
-  maxDeviationPx: 6,
-  maxDeviationRatio: 0.15,
+  maxPathRatio: 1.4,
+  maxDeviationPx: 8,
+  maxDeviationRatio: 0.2,
 };
 
 export interface Segment {
@@ -414,51 +414,56 @@ export interface MarkOptions {
 
 export const DEFAULT_MARK_OPTIONS: MarkOptions = {
   stroke: MARK_STROKE_OPTIONS,
-  maxLength: 200,
-  minAngle: 45,
-  crossMargin: 0.15,
-  maxLengthRatio: 2.5,
+  maxLength: 250,
+  minAngle: 35,
+  crossMargin: 0.1,
+  maxLengthRatio: 3,
 };
 
 /**
- * Do two strokes form a ✕? Returns its bounding box if so.
+ * Do two strokes form a ✕? Returns its bounding box, or why not.
  *
  * With `checkSize` false only the shape is checked (straight strokes crossing
  * near their middles at a clear angle), which works in any coordinate system
  * or scale: used on the pen-up copies before anything is read from the page.
  */
-export function findCrossMark(
+export function checkCrossMark(
   first: Pt[],
   second: Pt[],
   options: MarkOptions = DEFAULT_MARK_OPTIONS,
   checkSize = true,
-): Box | null {
+): {box: Box} | {reason: string} {
   const lineOptions = checkSize
     ? options.stroke
     : {...options.stroke, minLength: 0, maxDeviationPx: 0};
   const a = findStraightLine(first, lineOptions);
+  if (!a) {
+    return {reason: 'first stroke not straight or too short'};
+  }
   const b = findStraightLine(second, lineOptions);
-  if (!a || !b) {
-    return null;
+  if (!b) {
+    return {reason: 'second stroke not straight or too short'};
   }
   const la = distance(a.a, a.b);
   const lb = distance(b.a, b.b);
   if (la === 0 || lb === 0) {
-    return null;
+    return {reason: 'a stroke has no length'};
   }
   if (checkSize && Math.max(la, lb) > options.maxLength) {
-    return null;
+    return {reason: `strokes too long (${Math.round(Math.max(la, lb))} px)`};
   }
-  if (Math.max(la, lb) / Math.min(la, lb) > options.maxLengthRatio) {
-    return null;
+  const ratio = Math.max(la, lb) / Math.min(la, lb);
+  if (ratio > options.maxLengthRatio) {
+    return {reason: `strokes too unequal (${ratio.toFixed(1)}×)`};
   }
   const cos =
     Math.abs(
       (a.b.x - a.a.x) * (b.b.x - b.a.x) + (a.b.y - a.a.y) * (b.b.y - b.a.y),
     ) /
     (la * lb);
-  if ((Math.acos(Math.min(1, cos)) * 180) / Math.PI < options.minAngle) {
-    return null;
+  const angle = (Math.acos(Math.min(1, cos)) * 180) / Math.PI;
+  if (angle < options.minAngle) {
+    return {reason: `strokes too parallel (${Math.round(angle)}°)`};
   }
   // Intersection as a fraction along each stroke.
   const d =
@@ -469,9 +474,24 @@ export function findCrossMark(
     ((b.a.x - a.a.x) * (a.b.y - a.a.y) - (b.a.y - a.a.y) * (a.b.x - a.a.x)) / d;
   const m = options.crossMargin;
   if (t < m || t > 1 - m || u < m || u > 1 - m) {
-    return null;
+    return {
+      reason: `strokes do not cross in their middles (at ${Math.round(
+        t * 100,
+      )} % and ${Math.round(u * 100)} %)`,
+    };
   }
-  return unionBoxes([boundingBox(first), boundingBox(second)]);
+  return {box: unionBoxes([boundingBox(first), boundingBox(second)])!};
+}
+
+/** `checkCrossMark`, keeping only the box. */
+export function findCrossMark(
+  first: Pt[],
+  second: Pt[],
+  options: MarkOptions = DEFAULT_MARK_OPTIONS,
+  checkSize = true,
+): Box | null {
+  const result = checkCrossMark(first, second, options, checkSize);
+  return 'box' in result ? result.box : null;
 }
 
 export interface WritingLineOptions {
@@ -489,7 +509,7 @@ export interface WritingLineOptions {
 export const DEFAULT_WRITING_LINE_OPTIONS: WritingLineOptions = {
   bandScale: 0.9,
   minBandHalf: 30,
-  minGap: 10,
+  minGap: 0,
 };
 
 /**

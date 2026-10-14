@@ -1,6 +1,7 @@
 import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
+  checkCrossMark,
   findCrossMark,
   findWritingLine,
   strokesTouch,
@@ -191,6 +192,33 @@ describe('findCrossMark', () => {
     expect(findCrossMark(long, tiny)).toBeNull();
   });
 
+  it('says why two strokes are not a ✕', () => {
+    const v1 = bar({x: 40, y: 500}, {x: 60, y: 540});
+    const v2 = bar({x: 60, y: 540}, {x: 80, y: 500});
+    expect(checkCrossMark(v1, v2)).toEqual({
+      reason: 'strokes do not cross in their middles (at 100 % and 0 %)',
+    });
+    expect(checkCrossMark(ellipse(60, 520, 20, 20, 0.5, 12), up)).toEqual({
+      reason: 'first stroke not straight or too short',
+    });
+    const flat = bar({x: 40, y: 515}, {x: 80, y: 525});
+    expect(checkCrossMark(down, flat)).toMatchObject({
+      reason: expect.stringContaining('too parallel'),
+    });
+  });
+
+  it('accepts a quick, slightly curved ✕ crossing off-centre', () => {
+    // Bowed by 5 px, crossing at about a third of each stroke.
+    const bowed = (a: Pt, b: Pt) =>
+      Array.from({length: 13}, (_, i) => ({
+        x: a.x + ((b.x - a.x) * i) / 12 + 5 * Math.sin((Math.PI * i) / 12),
+        y: a.y + ((b.y - a.y) * i) / 12,
+      }));
+    const one = bowed({x: 40, y: 500}, {x: 90, y: 550});
+    const two = bowed({x: 40, y: 530}, {x: 90, y: 480});
+    expect(findCrossMark(one, two)).not.toBeNull();
+  });
+
   it('checks only the shape when asked (any scale or rotation)', () => {
     const scale = (pts: Pt[]) =>
       pts.map(p => ({x: 9000 - p.y * 10, y: p.x * 10}));
@@ -228,7 +256,7 @@ describe('findWritingLine', () => {
   });
 
   it('refuses a mark touching the writing (a written "x")', () => {
-    expect(findWritingLine(mark, [box(84, 500)])).toEqual({
+    expect(findWritingLine(mark, [box(75, 500)])).toEqual({
       reason: 'mark touches the writing',
     });
   });

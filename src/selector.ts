@@ -15,7 +15,7 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   findClosedLoop,
-  findCrossMark,
+  checkCrossMark,
   findWritingLine,
   fractionInside,
   growPolygon,
@@ -68,12 +68,6 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
-  /**
-   * Repaint the whole page (save, then reload). Needed after deleting
-   * strokes: the host only repaints where a lasso is drawn. Returns false if
-   * the page could not be saved and reloaded.
-   */
-  refreshPage(): Promise<boolean>;
   /** Free native element caches (except remembered erased elements). */
   release(): void;
 }
@@ -160,12 +154,21 @@ export async function handlePenUp(
   // Shape only, on the pen-up copies: nothing is read from (or saved to) the
   // page unless this stroke and the previous one form a ✕.
   const previous = options.previous;
-  const isMark =
-    !polygon &&
-    gestures.marginErase &&
-    !!previous &&
-    now - previous.at <= config.markMaxDelayMs &&
-    findCrossMark(previous.points, points, config.mark, false) !== null;
+  let isMark = false;
+  if (!polygon && gestures.marginErase) {
+    if (!previous) {
+      trace('✕ check: no previous stroke');
+    } else if (now - previous.at > config.markMaxDelayMs) {
+      trace(`✕ check: previous stroke ${now - previous.at} ms ago`);
+    } else {
+      const mark = checkCrossMark(previous.points, points, config.mark, false);
+      if ('reason' in mark) {
+        trace(`✕ check: ${mark.reason}`);
+      } else {
+        isMark = true;
+      }
+    }
+  }
   if (!polygon && !isMark) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
@@ -227,10 +230,11 @@ export async function handlePenUp(
     return {kind: 'failed', reason: 'first stroke of the ✕ not found'};
   }
   const firstPoints = await first.outline();
-  const mark = findCrossMark(firstPoints, stored, config.mark);
-  if (!mark) {
-    return {kind: 'ignored', reason: '✕ not recognised in page copy'};
+  const checked = checkCrossMark(firstPoints, stored, config.mark);
+  if ('reason' in checked) {
+    return {kind: 'ignored', reason: `✕ on the page: ${checked.reason}`};
   }
+  const mark = checked.box;
   trace(
     `✕ mark: #${first.numInPage} + #${stroke.numInPage}, ` +
       `${Math.round(mark.right - mark.left)}×${Math.round(
@@ -283,9 +287,6 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
   ctx.trace('loop stroke removed');
-  // The selection only repaints its own rectangle, and the loop lies outside
-  // it: repaint the whole page first, or the loop shows again as a phantom.
-  await host.refreshPage();
 
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
@@ -349,8 +350,8 @@ async function eraseNextToMark(
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   host.rememberErased(path, page, stroke.layerNum, erased);
-  // Deleting without a lasso does not repaint the page.
-  await host.refreshPage();
+  // Never reload the note to repaint: a reload that reads the file before
+  // the save has finished brings back older strokes (seen on device).
   return {kind: 'erased', count: erased.length};
 }
 

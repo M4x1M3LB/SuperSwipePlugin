@@ -357,7 +357,6 @@ export function createHost(pen: PenTracker): DeviceHost {
       }
       recycleAll(elements);
       erased = null;
-      await this.refreshPage();
       return `Restored ${elements.length} strokes on page ${page + 1}.`;
     },
 
@@ -368,34 +367,6 @@ export function createHost(pen: PenTracker): DeviceHost {
         trace,
       );
       return ok === true;
-    },
-
-    async refreshPage() {
-      // The host only repaints where a lasso is drawn, so deleted strokes stay
-      // in its screen buffer and show again where the pen passes. Saving then
-      // reloading the note repaints the whole page. Reloading after a failed
-      // save would bring back strokes deleted since the last good save, and
-      // writing in progress would be lost: wait for the pen, check the save.
-      await pen.waitForUp(5000);
-      const saved = await call<unknown>(
-        'saveCurrentNote',
-        () => PluginNoteAPI.saveCurrentNote(),
-        trace,
-      );
-      if (saved === null || saved === false) {
-        trace('not reloaded: save failed');
-        return false;
-      }
-      const reloaded = await call<unknown>(
-        'reloadFile',
-        () => PluginCommAPI.reloadFile(),
-        trace,
-      );
-      if (reloaded === null || reloaded === false) {
-        return false;
-      }
-      trace('page saved and reloaded');
-      return true;
     },
 
     release() {

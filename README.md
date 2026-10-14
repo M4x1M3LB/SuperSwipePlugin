@@ -31,23 +31,25 @@ Loop to select:
   loop, on the same layer. The loop counts as 20 px larger than drawn, so a
   loop drawn tight around writing, or slightly cutting through it, still
   selects it.
-- After removing the loop, the note is saved and reloaded before the
-  selection is made: the device only repaints inside a lasso, so the loop
-  would otherwise stay on screen as a phantom.
 - If the loop encloses nothing, it stays on the page as normal ink, so
   drawing an "O" or a circle on empty paper still works.
 
 Margin ✕ to erase:
 
-- Draw the ✕ as two short straight strokes (each 15–200 px), crossing near
-  their middles, the second within 2 seconds of the first. A "+" works too.
+- Draw the ✕ as two short, roughly straight strokes (each 15–250 px),
+  crossing away from their ends at 35° or more, the second within 2 seconds
+  of the first. A "+" works too. If a ✕ is not recognised, the plugin screen
+  says why (for example "strokes too parallel").
 - The line it erases: every stroke whose vertical centre is level with the
   ✕ (within 0.9 × its height, or at least 30 px), to its right, however far:
   dots and accents included. Strokes touching those go too (descenders,
   joined letters).
 - It only triggers in the margin: if anything level with the ✕ is on its
-  left, or closer than 10 px to it (a written "x"), nothing happens. A ✕ with
-  no writing next to it stays as ink.
+  left, or overlaps it (a written "x"), nothing happens. A ✕ with no writing
+  next to it stays as ink.
+- The erased strokes may show again faintly where the pen passes, for a few
+  seconds (the device does not repaint after deletions outside a lasso). This
+  is only on screen: they are gone from the note.
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
 - Nothing is read from or saved to the note until a ✕ is recognised from the
   shape of the two strokes, so normal writing stays fast.
@@ -56,6 +58,9 @@ Margin ✕ to erase:
 
 ## Limitations (Supernote SDK)
 
+- **No reloading.** The plugin never reloads the note: a reload that read the
+  file before the save had finished brought back strokes erased earlier
+  (seen on device in 0.0.5 and 0.0.7).
 - **Gestures clear the page's undo history.** The only SDK call that can
   delete specific strokes is `deletePageElements`, and it resets undo history
   on the page (measured on device by other plugin authors). Reading the
