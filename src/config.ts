@@ -1,16 +1,16 @@
 import {
   DEFAULT_LOOP_OPTIONS,
-  DEFAULT_CORNER_OPTIONS,
+  DEFAULT_SPIRAL_OPTIONS,
   DEFAULT_WRITING_LINE_OPTIONS,
   type LoopOptions,
-  type CornerOptions,
+  type SpiralOptions,
   type WritingLineOptions,
 } from './geometry';
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  /** Margin marks ┌ and ┘: one stroke, a vertical and a horizontal leg. */
-  corner: CornerOptions;
+  /** The margin spiral: one stroke turning 1½ times or more, growing. */
+  spiral: SpiralOptions;
   /** Which strokes form the line of writing next to the mark. */
   writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
@@ -38,7 +38,7 @@ export interface SelectorConfig {
 
 export const DEFAULT_CONFIG: SelectorConfig = {
   loop: DEFAULT_LOOP_OPTIONS,
-  corner: DEFAULT_CORNER_OPTIONS,
+  spiral: DEFAULT_SPIRAL_OPTIONS,
   writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],

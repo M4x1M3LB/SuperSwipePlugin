@@ -52,7 +52,7 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   remembered: PageElement[][];
-  /** Calls in order: 'delete', 'refresh', 'lasso'. */
+  /** Calls in order: 'delete', 'reload', 'lasso'. */
   calls: string[];
 }
 
@@ -91,8 +91,9 @@ function fakeHost(
       }
       return true;
     },
-    refreshScreen: async () => {
-      host.calls.push('refresh');
+    reloadIfQuiet: async () => {
+      host.calls.push('reload');
+      return true;
     },
     rememberErased: (_path, _page, _layer, elements) => {
       host.remembered.push(elements);
@@ -141,12 +142,32 @@ describe('handlePenUp', () => {
     expect(host.deleted).toEqual([]);
   });
 
-  it('refreshes the screen after removing the loop, before selecting', async () => {
+  it('refreshes the screen (reload) after removing the loop, before selecting', async () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop]);
 
     await handlePenUp([loop], host, DEFAULT_CONFIG);
-    expect(host.calls).toEqual(['delete', 'refresh', 'lasso']);
+    expect(host.calls).toEqual(['delete', 'reload', 'lasso']);
+  });
+
+  it('does not reload while the saved file still has the deleted stroke', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+    // The device "forgets" the deletion: the file keeps the loop.
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      return true;
+    };
+    const lines: string[] = [];
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+    expect(host.calls).not.toContain('reload');
+    expect(lines).toContain(
+      'not refreshed: the saved file still had the deleted strokes',
+    );
   });
 
   it('does not refresh the screen when that is switched off', async () => {
@@ -439,7 +460,7 @@ describe('handlePenUp: device quirks', () => {
   });
 });
 
-describe('handlePenUp: margin ┌ ┘ to erase', () => {
+describe('handlePenUp: margin spiral to erase', () => {
   beforeEach(() => {
     nextNum = 1;
   });
@@ -449,46 +470,42 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
     return [100, 140, 180, 220].map(x => el(letter(x, top)));
   }
 
-  /** A 40 px ┌ in the left margin, level with the row at y=500. */
-  const leftMark = [
-    ...straight({x: 80, y: 500}, {x: 40, y: 500}, 10),
-    ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10).slice(1),
-  ];
-  /** A 40 px ┘ in the right margin, level with the row at y=500. */
-  const rightMark = [
-    ...straight({x: 340, y: 500}, {x: 340, y: 540}, 10),
-    ...straight({x: 340, y: 540}, {x: 300, y: 540}, 10).slice(1),
-  ];
+  /** A 40 px snail shell centred on (cx, 520), level with the row at 500. */
+  function shell(cx: number): Pt[] {
+    return Array.from({length: 121}, (_, i) => {
+      const t = i / 120;
+      const a = t * 2 * 2 * Math.PI;
+      const r = 3 + 17 * t;
+      return {x: cx + r * Math.cos(a), y: 520 + r * Math.sin(a)};
+    });
+  }
+  const leftShell = shell(60); // x 40..80, before the row
+  const rightShell = shell(320); // x 300..340, after the row
 
-  it('┌ in the left margin erases the line on its right, and itself', async () => {
+  it('in the left margin, erases the line on its right, and itself', async () => {
     const above = row(420);
     const letters = row(500);
     const below = row(580);
-    const mark = el(leftMark);
+    const mark = el(leftShell);
     const host = fakeHost([...above, ...letters, ...below, mark]);
+    const lines: string[] = [];
 
-    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'erased',
-      count: 4,
-    });
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 4});
     // Newest first, so no removal shifts the numbers of the others.
     expect(host.deleted).toEqual([[13, 8, 7, 6, 5]]);
     expect(await host.getPageElements('', 3)).toEqual([...above, ...below]);
     expect(host.remembered).toEqual([letters]);
+    expect(lines).toContain('erasing the line on its right');
   });
 
-  it('refreshes the screen after erasing a line', async () => {
-    const mark = el(leftMark);
-    const host = fakeHost([...row(500), mark]);
-
-    await handlePenUp([mark], host, DEFAULT_CONFIG);
-    expect(host.calls).toEqual(['delete', 'refresh']);
-  });
-
-  it('┘ in the right margin erases the line on its left, and itself', async () => {
+  it('in the right margin, erases the line on its left, and itself', async () => {
     const above = row(420);
     const letters = row(500);
-    const mark = el(rightMark);
+    const mark = el(rightShell);
     const host = fakeHost([...above, ...letters, mark]);
     const lines: string[] = [];
 
@@ -498,7 +515,15 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
       }),
     ).toEqual({kind: 'erased', count: 4});
     expect(await host.getPageElements('', 3)).toEqual(above);
-    expect(lines.join('\n')).toContain('erasing the line on its left');
+    expect(lines).toContain('erasing the line on its left');
+  });
+
+  it('refreshes the screen after erasing a line', async () => {
+    const mark = el(leftShell);
+    const host = fakeHost([...row(500), mark]);
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete', 'reload']);
   });
 
   it('takes the whole line: dots, far words, touching strokes', async () => {
@@ -509,7 +534,7 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
     ]);
     const farWord = el(word(600, 512));
     const descender = el(straight({x: 245, y: 541}, {x: 242, y: 600}, 6));
-    const mark = el(leftMark);
+    const mark = el(leftShell);
     const host = fakeHost([...letters, dot, farWord, descender, mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -519,84 +544,28 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
     expect(await host.getPageElements('', 3)).toEqual([]);
   });
 
-  it('leaves a written "L" alone (checked on the page copy)', async () => {
-    const letterL = el([
-      ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10),
-      ...straight({x: 40, y: 540}, {x: 70, y: 540}, 10).slice(1),
-    ]);
-    const host = fakeHost([...row(500), letterL]);
-
-    expect(await handlePenUp([letterL], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'ignored',
-      reason:
-        'mark on the page: corner must be top left (┌) or bottom right (┘)',
-    });
-    expect(host.deleted).toEqual([]);
-  });
-
-  it('does not read the page for an "L" once pen-up copies are known to be in page coordinates', async () => {
-    const letterL = el([
-      ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10),
-      ...straight({x: 40, y: 540}, {x: 70, y: 540}, 10).slice(1),
-    ]);
-    const host = fakeHost([...row(500), letterL]);
-    const getPageElements = jest.spyOn(host, 'getPageElements');
-
-    expect(
-      await handlePenUp([letterL], host, DEFAULT_CONFIG, {penUpIsPage: true}),
-    ).toEqual({kind: 'ignored', reason: 'not a gesture'});
-    expect(getPageElements).not.toHaveBeenCalled();
-  });
-
-  it('learns whether pen-up copies are in page coordinates', async () => {
-    const learn = jest.fn();
-    const mark = el(leftMark);
+  it('is found before the loop check (a spiral turns enough to pass as one)', async () => {
+    const lines: string[] = [];
+    const mark = el(leftShell);
     await handlePenUp([mark], fakeHost([...row(500), mark]), DEFAULT_CONFIG, {
-      learnPenUpIsPage: learn,
+      trace: l => lines.push(l),
     });
-    expect(learn).toHaveBeenLastCalledWith(true);
-
-    const rotated = el(
-      leftMark.map(p => ({x: 9000 - p.y * 10, y: p.x * 10})),
-      {uuid: 'pen-up', numInPage: 0},
-    );
-    const stored = el(leftMark);
-    await handlePenUp(
-      [rotated],
-      fakeHost([...row(500), stored]),
-      DEFAULT_CONFIG,
-      {learnPenUpIsPage: learn},
-    );
-    expect(learn).toHaveBeenLastCalledWith(false);
+    expect(lines).toContain('shape: spiral');
   });
 
-  it('leaves a ┌ with writing on its left alone', async () => {
-    const before = el(word(0, 515, 25));
-    const mark = el(leftMark);
-    const host = fakeHost([before, ...row(500), mark]);
+  it('leaves a spiral inside a line of writing alone', async () => {
+    const mark = el(shell(180)); // in the middle of the row
+    const host = fakeHost([el(word(0, 515, 25)), el(word(260, 515, 40)), mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'writing on the left of the mark',
+      reason: 'writing on both sides of the spiral, or touching it',
     });
     expect(host.deleted).toEqual([]);
   });
 
-  it('leaves a ┘ in the left margin alone (writing on its right)', async () => {
-    const leftCorner = el([
-      ...straight({x: 80, y: 500}, {x: 80, y: 540}, 10),
-      ...straight({x: 80, y: 540}, {x: 40, y: 540}, 10).slice(1),
-    ]);
-    const host = fakeHost([...row(500), leftCorner]);
-
-    expect(await handlePenUp([leftCorner], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'ignored',
-      reason: 'writing on the right of the mark',
-    });
-  });
-
-  it('leaves a mark with nothing next to it as ink', async () => {
-    const mark = el(leftMark);
+  it('leaves a spiral with nothing next to it as ink', async () => {
+    const mark = el(leftShell);
     const host = fakeHost([...row(700), mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -605,17 +574,30 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
     });
   });
 
-  it('says in the trace why a stroke is not a mark', async () => {
+  it('a circle drawn twice around a word is still a loop, not a spiral', async () => {
+    const twice = Array.from({length: 161}, (_, i) => {
+      const a = (i / 80) * 2 * Math.PI;
+      return {x: 520 + 200 * Math.cos(a), y: 500 + 120 * Math.sin(a)};
+    });
+    const loop = el(twice);
+    const host = fakeHost([el(word(480, 500)), loop]);
+
+    expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+  });
+
+  it('says in the trace why a stroke is not a spiral', async () => {
     const stroke = el(word(100, 100, 200));
     const lines: string[] = [];
     await handlePenUp([stroke], fakeHost([stroke]), DEFAULT_CONFIG, {
       trace: l => lines.push(l),
     });
-    expect(lines.join('\n')).toContain('mark check:');
+    expect(lines.join('\n')).toContain('spiral check:');
   });
 
   it('respects the per-gesture switches', async () => {
-    const mark = el(leftMark);
+    const mark = el(leftShell);
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([...row(), mark, loop]);
     const off = {gestures: {loopSelect: false, marginErase: false}};

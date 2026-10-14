@@ -7,7 +7,6 @@
 import React, {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
-import {BLINK_MS, endBlink, isBlinking, subscribeBlink} from './src/blink';
 import {ensureFileAccess} from './src/host';
 import {restoreLastErase} from './src/plugin';
 import type {Gestures} from './src/selector';
@@ -17,32 +16,6 @@ function useStatus() {
   const [, setTick] = useState(0);
   useEffect(() => status.subscribe(() => setTick(t => t + 1)), []);
   return status;
-}
-
-/**
- * Shown while the plugin view is opened only to make the device repaint the
- * note page (see src/blink.ts): fully transparent, closes itself after
- * BLINK_MS, or at once on any touch. Closing is also driven by animation
- * frames, in case the host has paused the plugin's timers.
- */
-function Blink(): React.JSX.Element {
-  useEffect(() => {
-    const timer = setTimeout(endBlink, BLINK_MS);
-    let frames = 0;
-    let frame = requestAnimationFrame(function tick() {
-      frames++;
-      if (frames >= 20) {
-        endBlink();
-      } else {
-        frame = requestAnimationFrame(tick);
-      }
-    });
-    return () => {
-      clearTimeout(timer);
-      cancelAnimationFrame(frame);
-    };
-  }, []);
-  return <Pressable style={styles.blink} onPressIn={endBlink} />;
 }
 
 function Toggle(props: {label: string; name: keyof Gestures}) {
@@ -60,8 +33,6 @@ function Toggle(props: {label: string; name: keyof Gestures}) {
 
 function App(): React.JSX.Element {
   const s = useStatus();
-  const [, setBlinkTick] = useState(0);
-  useEffect(() => subscribeBlink(() => setBlinkTick(t => t + 1)), []);
   const [message, setMessage] = useState<string | null>(null);
 
   const requestAccess = async () => {
@@ -75,10 +46,6 @@ function App(): React.JSX.Element {
     setMessage(await restoreLastErase());
   };
 
-  if (isBlinking()) {
-    return <Blink />;
-  }
-
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
       <Pressable
@@ -90,12 +57,12 @@ function App(): React.JSX.Element {
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
-        lasso-select them. To erase a line of writing, draw a ┌ in the left
-        margin or a ┘ in the right margin, level with it.
+        lasso-select them. To erase a line of writing, draw a small spiral (a
+        snail shell) in the margin next to it, left or right.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
-      <Toggle label="Margin ┌ ┘ to erase" name="marginErase" />
+      <Toggle label="Margin spiral to erase" name="marginErase" />
       <Toggle label="Refresh screen after a gesture" name="screenRefresh" />
 
       <View style={styles.row}>
@@ -138,10 +105,6 @@ function App(): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  blink: {
-    flex: 1,
-    backgroundColor: 'transparent',
-  },
   scroll: {
     flex: 1,
     backgroundColor: '#ffffff',

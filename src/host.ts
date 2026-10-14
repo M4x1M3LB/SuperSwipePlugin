@@ -12,7 +12,6 @@ import {
 } from 'sn-plugin-lib';
 import type {Box, Pt} from './geometry';
 import type {Host, PageElement} from './selector';
-import {blink} from './blink';
 
 interface Response<T> {
   success: boolean;
@@ -103,6 +102,11 @@ export class PenTracker {
       }
       return true;
     });
+  }
+
+  /** Has the pen stayed off the screen since `time` (Date.now() ms)? */
+  quietSince(time: number): boolean {
+    return !this.down && this.lastEventAt < time;
   }
 
   waitForUp(maxWaitMs: number): Promise<void> {
@@ -262,6 +266,8 @@ export function createHost(pen: PenTracker): DeviceHost {
   let erased: ErasedStrokes | null = null;
 
   let trace: Trace = () => {};
+  // When the note was last saved, for reloadIfQuiet.
+  let savedAt = 0;
 
   const wrap = (elements: Element[]) => {
     fetched.push(...elements);
@@ -302,6 +308,7 @@ export function createHost(pen: PenTracker): DeviceHost {
     async getPageElements(path, page) {
       // getElements reads the note file: save first so it contains the
       // stroke that was just drawn.
+      savedAt = Date.now();
       await call(
         'saveCurrentNote',
         () => PluginNoteAPI.saveCurrentNote(),
@@ -361,10 +368,17 @@ export function createHost(pen: PenTracker): DeviceHost {
       return `Restored ${elements.length} strokes on page ${page + 1}.`;
     },
 
-    async refreshScreen() {
-      // Not while writing: the view would cover the page under the pen.
-      await pen.waitForUp(5000);
-      await blink();
+    async reloadIfQuiet() {
+      // Anything written since the last save would be lost by the reload.
+      if (!pen.quietSince(savedAt)) {
+        return false;
+      }
+      const reloaded = await call<unknown>(
+        'reloadFile',
+        () => PluginCommAPI.reloadFile(),
+        trace,
+      );
+      return reloaded !== null && reloaded !== false;
     },
 
     async lassoRect(rect: Box) {

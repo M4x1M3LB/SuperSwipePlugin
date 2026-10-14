@@ -17,7 +17,7 @@ import {
   boundingBox,
   checkClosedLoop,
   findClosedLoop,
-  checkCornerMark,
+  checkSpiral,
   findWritingLine,
   fractionInside,
   growPolygon,
@@ -71,10 +71,12 @@ export interface Host {
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
   /**
-   * Make the device repaint the page, without touching the note's data:
-   * strokes deleted outside a lasso otherwise linger on screen (ghosting).
+   * Reload the note, which repaints the page (deleted strokes otherwise
+   * linger on screen). Only call it once the saved file is known to match
+   * the page. Implementations must not reload if anything was written since
+   * the last save (it would be lost). Returns whether it reloaded.
    */
-  refreshScreen(): Promise<void>;
+  reloadIfQuiet(): Promise<boolean>;
   /** Free native element caches (except remembered erased elements). */
   release(): void;
 }
@@ -111,14 +113,6 @@ interface Context {
 
 export interface HandleOptions {
   gestures?: Gestures;
-  /**
-   * Whether pen-up copies of strokes are known to be in page coordinates
-   * (learnt from earlier gestures). When true, the margin mark's orientation
-   * is checked before anything is read from (or saved to) the page.
-   */
-  penUpIsPage?: boolean;
-  /** Receives what was learnt about the pen-up coordinates. */
-  learnPenUpIsPage?: (same: boolean) => void;
   /** Checked right before the page is modified. */
   isCancelled?: () => boolean;
   /** Receives one line per decision, shown on the plugin screen. */
@@ -152,9 +146,8 @@ export async function handlePenUp(
   // stroke, newest first, and take the first gesture.
   //
   // Checked on the pen-up copy, so nothing is read from (or saved to) the
-  // page for ordinary writing. A mark's orientation is only checked once
-  // the pen-up copy is known to be in page coordinates; otherwise on the
-  // page copy below.
+  // page for ordinary writing. The spiral is checked first: it also turns
+  // far enough to pass as a loop.
   let gesture: PageElement | null = null;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
@@ -163,6 +156,14 @@ export async function handlePenUp(
     const pts = await candidate.outline();
     const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
     trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
+    if (gestures.marginErase) {
+      const spiral = checkSpiral(pts, config.spiral, false);
+      if ('box' in spiral) {
+        [gesture, points] = [candidate, pts];
+        break;
+      }
+      trace(`  spiral check: ${spiral.reason}`);
+    }
     if (gestures.loopSelect) {
       const loop = checkClosedLoop(pts, config.loop);
       if ('polygon' in loop) {
@@ -171,23 +172,11 @@ export async function handlePenUp(
       }
       trace(`  loop check: ${loop.reason}`);
     }
-    if (gestures.marginErase) {
-      const mark = checkCornerMark(
-        pts,
-        config.corner,
-        options.penUpIsPage === true,
-      );
-      if ('box' in mark) {
-        [gesture, points] = [candidate, pts];
-        break;
-      }
-      trace(`  mark check: ${mark.reason}`);
-    }
   }
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: margin mark');
+  trace(polygon ? 'shape: closed loop' : 'shape: spiral');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -216,7 +205,6 @@ export async function handlePenUp(
   // The pen-up copy and the page copy of a stroke are not guaranteed to use
   // the same coordinates, so work from the page copy, like everything else.
   const stored = await stroke.outline();
-  options.learnPenUpIsPage?.(sameStroke(points, stored));
   trace(
     `gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}, ` +
       `${stored.length} points; first point pen-up ${fmt(points[0])}, ` +
@@ -245,32 +233,17 @@ export async function handlePenUp(
     return selectInLoop(ctx, pagePolygon);
   }
 
-  const checked = checkCornerMark(stored, config.corner);
+  const checked = checkSpiral(stored, config.spiral);
   if ('reason' in checked) {
-    return {kind: 'ignored', reason: `mark on the page: ${checked.reason}`};
+    return {kind: 'ignored', reason: `spiral on the page: ${checked.reason}`};
   }
   const mark = checked.box;
-  // ┌ in the left margin erases the line on its right; ┘ in the right
-  // margin, the line on its left.
-  const side = checked.kind === 'topLeft' ? 'right' : 'left';
   trace(
-    `${side === 'right' ? '┌' : '┘'} mark: ${Math.round(
-      mark.right - mark.left,
-    )}×${Math.round(
+    `spiral: ${Math.round(mark.right - mark.left)}×${Math.round(
       mark.bottom - mark.top,
-    )} px, erasing the line on its ${side}`,
+    )} px`,
   );
-  return eraseNextToMark(ctx, mark, side);
-}
-
-/** Are two copies of a stroke the same points (same coordinates)? */
-function sameStroke(a: Pt[], b: Pt[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every(
-      (p, i) => Math.abs(p.x - b[i].x) <= 2 && Math.abs(p.y - b[i].y) <= 2,
-    )
-  );
+  return eraseNextToMark(ctx, mark);
 }
 
 function fmt(p: Pt | undefined): string {
@@ -308,14 +281,13 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   if (blocked) {
     return blocked;
   }
-  if (!(await deleteVerified(ctx, [stroke]))) {
+  const removed = await deleteVerified(ctx, [stroke]);
+  if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
   ctx.trace('loop stroke removed');
-  if (ctx.screenRefresh) {
-    await host.refreshScreen();
-    ctx.trace('screen refreshed');
-  }
+  // Before selecting: a reload would drop the selection.
+  await repaint(ctx, removed.fileClean);
 
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
@@ -329,11 +301,7 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
  * Erase the line of writing to the right of a margin mark, the strokes
  * touching it (a "t" bar, a descender), and the mark.
  */
-async function eraseNextToMark(
-  ctx: Context,
-  mark: Box,
-  side: 'left' | 'right',
-): Promise<Outcome> {
+async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
   const strokes: {element: PageElement; outline: Pt[]; box: Box}[] = [];
   for (const element of ctx.others) {
@@ -344,16 +312,20 @@ async function eraseNextToMark(
       }
     }
   }
-  const line = findWritingLine(
-    mark,
-    strokes.map(s => s.box),
-    config.writingLine,
-    side,
-  );
+  // The spiral has no direction: the line is on whichever side it is.
+  // Writing on both sides means the spiral is part of the text.
+  const boxes = strokes.map(s => s.box);
+  const right = findWritingLine(mark, boxes, config.writingLine, 'right');
+  const left = findWritingLine(mark, boxes, config.writingLine, 'left');
+  const line = 'indices' in right ? right : left;
   if ('reason' in line) {
-    // A corner drawn as part of the text: leave the ink alone.
-    return {kind: 'ignored', reason: line.reason};
+    const reason =
+      'reason' in right && right.reason === 'no writing next to the mark'
+        ? right.reason
+        : 'writing on both sides of the spiral, or touching it';
+    return {kind: 'ignored', reason};
   }
+  ctx.trace(`erasing the line on its ${'indices' in right ? 'right' : 'left'}`);
   const row = line.indices.map(i => strokes[i]);
   ctx.trace(`line of writing: ${row.length} stroke(s)`);
 
@@ -376,16 +348,12 @@ async function eraseNextToMark(
   if (blocked) {
     return blocked;
   }
-  if (!(await deleteVerified(ctx, [...erased, stroke]))) {
+  const removed = await deleteVerified(ctx, [...erased, stroke]);
+  if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   host.rememberErased(path, page, stroke.layerNum, erased);
-  // Never reload the note to repaint: a reload that reads the file before
-  // the save has finished brings back older strokes (seen on device).
-  if (ctx.screenRefresh) {
-    await host.refreshScreen();
-    ctx.trace('screen refreshed');
-  }
+  await repaint(ctx, removed.fileClean);
   return {kind: 'erased', count: erased.length};
 }
 
@@ -398,7 +366,7 @@ async function eraseNextToMark(
 async function deleteVerified(
   ctx: Context,
   targets: PageElement[],
-): Promise<boolean> {
+): Promise<{deleted: boolean; fileClean: boolean}> {
   const {host, path, page, stroke} = ctx;
   const signature = async (e: PageElement) => {
     const pts = await e.outline();
@@ -408,27 +376,55 @@ async function deleteVerified(
   const descending = (els: PageElement[]) =>
     els.map(e => e.numInPage).sort((a, b) => b - a);
 
+  // Saves the page, then reads the file: what is still there.
+  const stillThere = async () => {
+    const left: PageElement[] = [];
+    for (const e of await host.getPageElements(path, page)) {
+      if (
+        e.type === STROKE &&
+        e.layerNum === stroke.layerNum &&
+        wanted.has(await signature(e))
+      ) {
+        left.push(e);
+      }
+    }
+    return left;
+  };
+
   if (
     !(await host.deleteElements(descending(targets), page, stroke.layerNum))
   ) {
-    return false;
+    return {deleted: false, fileClean: false};
   }
-  const after = await host.getPageElements(path, page);
-  const left: PageElement[] = [];
-  for (const e of after) {
-    if (
-      e.type === STROKE &&
-      e.layerNum === stroke.layerNum &&
-      wanted.has(await signature(e))
-    ) {
-      left.push(e);
+  let left = await stillThere();
+  if (left.length > 0) {
+    ctx.trace(`still on page after delete: ${left.length}, deleting again`);
+    if (!(await host.deleteElements(descending(left), page, stroke.layerNum))) {
+      return {deleted: false, fileClean: false};
     }
+    left = await stillThere();
   }
-  if (left.length === 0) {
-    return true;
+  return {deleted: true, fileClean: left.length === 0};
+}
+
+/**
+ * Repaint the page by reloading the note, but only once the saved file is
+ * known to no longer hold the deleted strokes: a reload that reads the file
+ * before a save has finished brings old strokes back (seen on device).
+ */
+async function repaint(ctx: Context, fileClean: boolean): Promise<void> {
+  if (!ctx.screenRefresh) {
+    return;
   }
-  ctx.trace(`still on page after delete: ${left.length}, deleting again`);
-  return host.deleteElements(descending(left), page, stroke.layerNum);
+  if (!fileClean) {
+    ctx.trace('not refreshed: the saved file still had the deleted strokes');
+    return;
+  }
+  ctx.trace(
+    (await ctx.host.reloadIfQuiet())
+      ? 'screen refreshed (note reloaded)'
+      : 'not refreshed: the pen was used since the save',
+  );
 }
 
 /** Last checks before the page is modified; returns why not to, if any. */

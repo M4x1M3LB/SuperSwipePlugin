@@ -112,20 +112,26 @@ export function polygonArea(polygon: Pt[]): number {
   return Math.abs(sum / 2);
 }
 
-/** Even-odd ray casting. The polygon is implicitly closed. */
+/**
+ * Is `p` inside the polygon (implicitly closed)? Uses the winding number, so
+ * a loop drawn twice around something still contains it (with even-odd
+ * counting, the second pass would cancel the first).
+ */
 export function pointInPolygon(p: Pt, polygon: Pt[]): boolean {
-  let inside = false;
+  let winding = 0;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const a = polygon[i];
-    const b = polygon[j];
-    if (
-      a.y > p.y !== b.y > p.y &&
-      p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x
-    ) {
-      inside = !inside;
+    const a = polygon[j];
+    const b = polygon[i];
+    const side = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+    if (a.y <= p.y) {
+      if (b.y > p.y && side > 0) {
+        winding++;
+      }
+    } else if (b.y <= p.y && side < 0) {
+      winding--;
     }
   }
-  return inside;
+  return winding !== 0;
 }
 
 /** Fraction (0..1) of `points` that fall inside `polygon`. */
@@ -297,81 +303,6 @@ export function padAndClamp(
   };
 }
 
-export interface LineOptions {
-  /** Minimum number of sample points. */
-  minPoints: number;
-  /** Minimum distance between the two ends, in px. */
-  minLength: number;
-  /** Max path length divided by the end-to-end distance. */
-  maxPathRatio: number;
-  /** Max distance of any point from the end-to-end chord, in px... */
-  maxDeviationPx: number;
-  /** ...or as a fraction of the chord length, whichever is larger. */
-  maxDeviationRatio: number;
-}
-
-/** Each leg of a margin ┘: short and roughly straight. */
-export const MARK_STROKE_OPTIONS: LineOptions = {
-  minPoints: 3,
-  minLength: 15,
-  maxPathRatio: 1.4,
-  maxDeviationPx: 10,
-  maxDeviationRatio: 0.2,
-};
-
-export interface Segment {
-  a: Pt;
-  b: Pt;
-}
-
-/** Signed perpendicular distance from `p` to the infinite line through a, b. */
-function signedDistance(p: Pt, {a, b}: Segment): number {
-  const len = distance(a, b);
-  return ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
-}
-
-/** Keep only points at least `step` px from the previously kept one. */
-function thin(points: Pt[], step: number): Pt[] {
-  const kept = [points[0]];
-  for (const p of points) {
-    if (distance(kept[kept.length - 1], p) >= step) {
-      kept.push(p);
-    }
-  }
-  kept.push(points[points.length - 1]);
-  return kept;
-}
-
-/** Return the stroke's end-to-end segment if it is a straight line. */
-export function findStraightLine(
-  points: Pt[],
-  options: LineOptions,
-): Segment | null {
-  if (points.length < options.minPoints) {
-    return null;
-  }
-  const line = {a: points[0], b: points[points.length - 1]};
-  const chord = distance(line.a, line.b);
-  if (chord < options.minLength) {
-    return null;
-  }
-  // Measure on thinned points so dense pen sampling plus hand jitter does not
-  // inflate the length of an otherwise straight stroke.
-  if (pathLength(thin(points, 10)) / chord > options.maxPathRatio) {
-    return null;
-  }
-  const maxDeviation = Math.max(
-    options.maxDeviationPx,
-    options.maxDeviationRatio * chord,
-  );
-  for (const p of points) {
-    if (Math.abs(signedDistance(p, line)) > maxDeviation) {
-      return null;
-    }
-  }
-  return line;
-}
-
 function cross(o: Pt, a: Pt, b: Pt): number {
   return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 }
@@ -451,128 +382,80 @@ export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
   return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
 }
 
-export interface CornerOptions {
-  /** Each leg must be roughly straight, at least `minLength` px long. */
-  leg: LineOptions;
-  /** Longest allowed leg, in px. */
-  maxLeg: number;
-  /** Shortest leg divided by the longest one. */
-  minLegRatio: number;
-  /** Angle at the corner, in degrees. */
-  minAngle: number;
-  maxAngle: number;
-  /** How far, in degrees, the legs may lean off vertical / horizontal. */
-  axisTolerance: number;
+export interface SpiralOptions {
+  /** Minimum number of sample points. */
+  minPoints: number;
+  /** How far the stroke must turn in total, in degrees (540 = 1½ turns). */
+  minTurnDegrees: number;
+  /**
+   * The outer end must be at least this many times further from the centre
+   * than the inner end: a spiral grows, a loop drawn twice does not.
+   */
+  minGrowth: number;
+  /** Fraction of the points at each end used to measure its distance. */
+  endFraction: number;
+  /** Size limits of the spiral's box, in px (checked on the page copy). */
+  minSize: number;
+  maxSize: number;
 }
 
-export const DEFAULT_CORNER_OPTIONS: CornerOptions = {
-  leg: MARK_STROKE_OPTIONS,
-  maxLeg: 250,
-  minLegRatio: 0.2,
-  minAngle: 50,
-  maxAngle: 130,
-  axisTolerance: 35,
+export const DEFAULT_SPIRAL_OPTIONS: SpiralOptions = {
+  minPoints: 15,
+  minTurnDegrees: 540,
+  minGrowth: 2,
+  endFraction: 0.15,
+  minSize: 20,
+  maxSize: 300,
 };
 
-/** Angle of the vector a→b against the x axis, folded to 0..90 degrees. */
-function axisAngle(a: Pt, b: Pt): number {
-  const deg =
-    (Math.atan2(Math.abs(b.y - a.y), Math.abs(b.x - a.x)) * 180) / Math.PI;
-  return deg;
-}
-
 /**
- * Which corner a margin mark has: ┌ (top left, for the left margin) or
- * ┘ (bottom right, for the right margin).
- */
-export type CornerKind = 'topLeft' | 'bottomRight';
-
-/**
- * Is the stroke a margin mark: a vertical leg and a horizontal leg meeting at
- * a corner at the top left (┌) or the bottom right (┘)? Drawn either way.
- * Returns the stroke's bounding box and which corner, or why not.
+ * Is the stroke a spiral (a snail shell), drawn from the inside out or from
+ * the outside in, either way round? Returns its bounding box, or why not.
  *
- * With `checkLayout` false, only what does not depend on the coordinate
- * system is checked (one corner, two straight legs, angle, leg ratio): used
- * on the pen-up copy when it is not known to be in page coordinates.
+ * Turning and growth do not depend on the coordinate system, rotation or
+ * scale, so with `checkSize` false the check works on the pen-up copy.
  */
-export function checkCornerMark(
+export function checkSpiral(
   points: Pt[],
-  options: CornerOptions = DEFAULT_CORNER_OPTIONS,
-  checkLayout = true,
-): {box: Box; kind?: CornerKind} | {reason: string} {
-  if (points.length < 2 * options.leg.minPoints) {
+  options: SpiralOptions = DEFAULT_SPIRAL_OPTIONS,
+  checkSize = true,
+): {box: Box} | {reason: string} {
+  if (points.length < options.minPoints) {
     return {reason: 'too few points'};
   }
-  const first = points[0];
-  const last = points[points.length - 1];
-  const chordLength = distance(first, last);
-  if (chordLength === 0) {
-    return {reason: 'stroke ends where it starts'};
+  const turned = Math.abs(netTurning(points));
+  if (turned < options.minTurnDegrees) {
+    return {
+      reason: `turns ${Math.round(turned)}° (needs ${options.minTurnDegrees}°)`,
+    };
   }
-  // The corner: the point furthest from the start-end chord.
-  let k = 0;
-  let furthest = -1;
-  for (let i = 1; i < points.length - 1; i++) {
-    const p = points[i];
-    const d = Math.abs(
-      ((last.x - first.x) * (p.y - first.y) -
-        (last.y - first.y) * (p.x - first.x)) /
-        chordLength,
-    );
-    if (d > furthest) {
-      furthest = d;
-      k = i;
+  const centre = points.reduce(
+    (acc, p) => ({
+      x: acc.x + p.x / points.length,
+      y: acc.y + p.y / points.length,
+    }),
+    {x: 0, y: 0},
+  );
+  const k = Math.max(1, Math.floor(points.length * options.endFraction));
+  const meanDistance = (pts: Pt[]) =>
+    pts.reduce((sum, p) => sum + distance(p, centre), 0) / pts.length;
+  const a = meanDistance(points.slice(0, k));
+  const b = meanDistance(points.slice(points.length - k));
+  const growth = Math.max(a, b) / Math.max(1e-9, Math.min(a, b));
+  if (growth < options.minGrowth) {
+    return {reason: `does not grow like a spiral (×${growth.toFixed(1)})`};
+  }
+  const box = boundingBox(points);
+  if (checkSize) {
+    const size = Math.max(box.right - box.left, box.bottom - box.top);
+    if (size < options.minSize) {
+      return {reason: 'too small'};
+    }
+    if (size > options.maxSize) {
+      return {reason: `too big (${Math.round(size)} px)`};
     }
   }
-  const legOptions = checkLayout
-    ? options.leg
-    : {...options.leg, minLength: 0, maxDeviationPx: 0};
-  const legA = findStraightLine(points.slice(0, k + 1), legOptions);
-  const legB = findStraightLine(points.slice(k), legOptions);
-  if (!legA || !legB) {
-    return {reason: 'not two straight legs'};
-  }
-  const corner = points[k];
-  const la = distance(corner, first);
-  const lb = distance(corner, last);
-  if (Math.min(la, lb) / Math.max(la, lb) < options.minLegRatio) {
-    return {reason: 'one leg much shorter than the other'};
-  }
-  const cos =
-    ((first.x - corner.x) * (last.x - corner.x) +
-      (first.y - corner.y) * (last.y - corner.y)) /
-    (la * lb);
-  const angle = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
-  if (angle < options.minAngle || angle > options.maxAngle) {
-    return {reason: `corner angle ${Math.round(angle)}°`};
-  }
-  if (checkLayout) {
-    if (Math.max(la, lb) > options.maxLeg) {
-      return {reason: `legs too long (${Math.round(Math.max(la, lb))} px)`};
-    }
-    // Which end is along the vertical leg, which along the horizontal one.
-    const [vertical, side] =
-      axisAngle(corner, first) > axisAngle(corner, last)
-        ? [first, last]
-        : [last, first];
-    const tol = options.axisTolerance;
-    if (
-      axisAngle(corner, vertical) < 90 - tol ||
-      axisAngle(corner, side) > tol
-    ) {
-      return {reason: 'legs not vertical and horizontal'};
-    }
-    // ┌: the legs go down and right from the corner; ┘: up and left.
-    if (vertical.y > corner.y && side.x > corner.x) {
-      return {box: boundingBox(points), kind: 'topLeft'};
-    }
-    if (vertical.y < corner.y && side.x < corner.x) {
-      return {box: boundingBox(points), kind: 'bottomRight'};
-    }
-    return {reason: 'corner must be top left (┌) or bottom right (┘)'};
-  }
-  return {box: boundingBox(points)};
+  return {box};
 }
 
 export interface WritingLineOptions {

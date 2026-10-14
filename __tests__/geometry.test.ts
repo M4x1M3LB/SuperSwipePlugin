@@ -2,7 +2,7 @@ import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
   netTurning,
-  checkCornerMark,
+  checkSpiral,
   findWritingLine,
   strokesTouch,
   fractionInside,
@@ -158,126 +158,66 @@ describe('polygon helpers', () => {
   });
 });
 
-/** A polyline through `corners`, `n` points per segment, slight wobble. */
-function path(corners: Pt[], n = 10): Pt[] {
-  const pts: Pt[] = [corners[0]];
-  for (let c = 1; c < corners.length; c++) {
-    const [a, b] = [corners[c - 1], corners[c]];
-    for (let i = 1; i <= n; i++) {
-      pts.push({
-        x: a.x + ((b.x - a.x) * i) / n + (i % 2 ? 0.7 : -0.7),
-        y: a.y + ((b.y - a.y) * i) / n,
-      });
-    }
-  }
-  return pts;
+/** A spiral around (cx, cy): radius r0 → r1 over `turns` turns. */
+function spiral(
+  cx: number,
+  cy: number,
+  r0: number,
+  r1: number,
+  turns: number,
+  n = 120,
+): Pt[] {
+  return Array.from({length: n + 1}, (_, i) => {
+    const t = i / n;
+    const a = t * turns * 2 * Math.PI;
+    const r = r0 + (r1 - r0) * t;
+    return {x: cx + r * Math.cos(a), y: cy + r * Math.sin(a)};
+  });
 }
 
-describe('checkCornerMark', () => {
-  // A 40 px reverse L: down from (80, 500) to the corner (80, 540), then
-  // left to (40, 540).
-  const mark = path([
-    {x: 80, y: 500},
-    {x: 80, y: 540},
-    {x: 40, y: 540},
-  ]);
-
-  it('recognises a ┘ (corner bottom right) and returns its box', () => {
-    expect(checkCornerMark(mark)).toEqual({
-      box: {left: 39.3, top: 500, right: 80.7, bottom: 540},
-      kind: 'bottomRight',
+describe('checkSpiral', () => {
+  it('recognises a snail shell drawn from the inside out', () => {
+    expect(checkSpiral(spiral(60, 520, 3, 20, 2))).toEqual({
+      box: expect.objectContaining({}),
     });
   });
 
-  it('recognises a ┌ (corner top left), drawn either way', () => {
-    // Across the top from (80, 500) to the corner (40, 500), then down.
-    const topLeft = path([
-      {x: 80, y: 500},
-      {x: 40, y: 500},
-      {x: 40, y: 540},
-    ]);
-    expect(checkCornerMark(topLeft)).toMatchObject({kind: 'topLeft'});
-    expect(checkCornerMark([...topLeft].reverse())).toMatchObject({
-      kind: 'topLeft',
+  it('recognises it from the outside in, and the other way round', () => {
+    const outsideIn = spiral(60, 520, 20, 3, 2);
+    expect(checkSpiral(outsideIn)).toHaveProperty('box');
+    const mirrored = outsideIn.map(p => ({x: 120 - p.x, y: p.y}));
+    expect(checkSpiral(mirrored)).toHaveProperty('box');
+  });
+
+  it('accepts a quick one-and-a-half turn spiral', () => {
+    expect(checkSpiral(spiral(60, 520, 4, 18, 1.6, 50))).toHaveProperty('box');
+  });
+
+  it('rejects a single loop and a loop drawn twice (no growth)', () => {
+    expect(checkSpiral(ellipse(60, 520, 20, 20))).toMatchObject({
+      reason: expect.stringContaining('turns'),
+    });
+    expect(checkSpiral(ellipse(60, 520, 20, 18, 2, 120))).toMatchObject({
+      reason: expect.stringContaining('does not grow'),
     });
   });
 
-  it('recognises it drawn the other way (right, then up)', () => {
-    expect(checkCornerMark([...mark].reverse())).toHaveProperty('box');
-  });
-
-  it('accepts a slightly tilted, uneven one', () => {
-    const tilted = path([
-      {x: 85, y: 495},
-      {x: 78, y: 548},
-      {x: 50, y: 543},
-    ]);
-    expect(checkCornerMark(tilted)).toHaveProperty('box');
-  });
-
-  it('rejects a written "L" and a "7" (other corners)', () => {
-    const letterL = path([
-      {x: 40, y: 500},
-      {x: 40, y: 540},
-      {x: 70, y: 540},
-    ]);
-    expect(checkCornerMark(letterL)).toEqual({
-      reason: 'corner must be top left (┌) or bottom right (┘)',
-    });
-    const seven = path([
-      {x: 40, y: 500},
-      {x: 80, y: 500},
-      {x: 60, y: 540},
-    ]);
-    expect(checkCornerMark(seven)).toHaveProperty('reason');
-  });
-
-  it('rejects a straight line, a narrow "v" and a curve', () => {
-    expect(
-      checkCornerMark(
-        path([
-          {x: 40, y: 500},
-          {x: 120, y: 500},
-        ]),
-      ),
-    ).toHaveProperty('reason');
-    expect(
-      checkCornerMark(
-        path([
-          {x: 40, y: 500},
-          {x: 50, y: 540},
-          {x: 60, y: 500},
-        ]),
-      ),
-    ).toMatchObject({reason: expect.stringContaining('corner angle')});
-    expect(checkCornerMark(ellipse(60, 520, 20, 20, 0.5, 20))).toHaveProperty(
+  it('rejects writing-like strokes', () => {
+    expect(checkSpiral(line({x: 0, y: 0}, {x: 200, y: 0}))).toHaveProperty(
       'reason',
     );
+    expect(checkSpiral(ellipse(60, 520, 20, 20, 0.5))).toHaveProperty('reason');
   });
 
-  it('rejects legs that are too long or too unequal', () => {
-    const big = path([
-      {x: 400, y: 100},
-      {x: 400, y: 500},
-      {x: 100, y: 500},
-    ]);
-    expect(checkCornerMark(big)).toMatchObject({
-      reason: expect.stringContaining('too long'),
+  it('checks size on the page copy only', () => {
+    const big = spiral(500, 500, 20, 200, 2);
+    expect(checkSpiral(big)).toMatchObject({
+      reason: expect.stringContaining('too big'),
     });
-    const lopsided = path([
-      {x: 80, y: 440},
-      {x: 80, y: 540},
-      {x: 62, y: 540},
-    ]);
-    expect(checkCornerMark(lopsided)).toEqual({
-      reason: 'one leg much shorter than the other',
+    expect(checkSpiral(big, undefined, false)).toHaveProperty('box');
+    expect(checkSpiral(spiral(60, 520, 1, 6, 2))).toEqual({
+      reason: 'too small',
     });
-  });
-
-  it('checks only the shape when the layout is unknown (any rotation)', () => {
-    const rotated = mark.map(p => ({x: 9000 - p.y * 10, y: p.x * 10}));
-    expect(checkCornerMark(rotated, undefined, false)).toHaveProperty('box');
-    expect(checkCornerMark(rotated)).toHaveProperty('reason');
   });
 });
 

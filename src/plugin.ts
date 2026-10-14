@@ -17,10 +17,6 @@ export function startGestures(): void {
   // pause them once the plugin view has been shown), so a stroke that is
   // still busy after the time limit is abandoned when the next one arrives.
   let busy: {since: number; abandon: () => void} | null = null;
-  // Whether pen-up strokes come in page coordinates: learnt from the first
-  // gesture whose page copy is read, then used to check the margin mark's
-  // orientation up front.
-  let penUpIsPage: boolean | undefined;
 
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
@@ -58,10 +54,6 @@ export function startGestures(): void {
       const elements = device.wrap(msg as Element[]);
       handlePenUp(elements, device, DEFAULT_CONFIG, {
         gestures,
-        penUpIsPage,
-        learnPenUpIsPage: same => {
-          penUpIsPage = same;
-        },
         isCancelled: () => abandoned,
         trace,
       })
