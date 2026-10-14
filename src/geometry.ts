@@ -1,8 +1,11 @@
 /**
- * Pure geometry helpers for loop-to-select. No SDK imports so everything here
- * is unit-testable in plain Jest.
+ * Pure geometry for the gestures: loop, straight line and margin wave
+ * detection, containment, touching strokes and the line of writing next to
+ * a wave. No SDK imports so everything here is unit-testable in plain Jest.
  *
- * All coordinates are Android page pixels (sn-plugin-lib > 0.1.65).
+ * Page copies of strokes are in Android page pixels (sn-plugin-lib >
+ * 0.1.65). The pen-up copy may use another system (scale, axes), so checks
+ * run on it use ratios and angles only.
  */
 
 export interface Pt {
@@ -601,13 +604,13 @@ export function findWritingLine(
       const onOther =
         side === 'right' ? b.right <= mark.left : b.left >= mark.right;
       if (onOther) {
-        return {reason: `writing on the ${other} of the mark`};
+        return {reason: `writing on the ${other} of the wave`};
       }
       return {
         reason:
           distanceOut < 0
-            ? 'mark touches the writing'
-            : `mark too close to the writing (${Math.round(
+            ? 'wave touches the writing'
+            : `wave too close to the writing (${Math.round(
                 distanceOut,
               )} px, needs ${Math.round(gap)})`,
       };
@@ -616,5 +619,5 @@ export function findWritingLine(
   }
   return indices.length > 0
     ? {indices}
-    : {reason: 'no writing next to the mark'};
+    : {reason: 'no writing next to the wave'};
 }

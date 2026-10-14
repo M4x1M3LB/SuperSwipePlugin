@@ -1,6 +1,6 @@
 {
   "name": "SuperSwipe",
-  "version": "0.0.22",
+  "version": "0.0.23",
   "private": true,
   "scripts": {
     "build": "./buildPlugin.sh",
@@ -37,5 +37,5 @@
   "engines": {
     "node": ">=18"
   },
-  "description": "Supernote plugin: loop to select, line to erase."
+  "description": "Supernote plugin: loop or line to select, margin wave to erase."
 }

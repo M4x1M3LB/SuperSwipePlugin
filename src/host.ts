@@ -234,7 +234,7 @@ async function requestFileAccess(): Promise<boolean> {
     }
     const choice = await PluginManager.requestPermission(
       permission,
-      'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses and erase what a line crosses.',
+      'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses or what lies above or below a line, and erase a line of writing next to a margin wave.',
     );
     if (choice !== 1 && choice !== 2) {
       return false;
@@ -255,14 +255,14 @@ export interface DeviceHost extends Host {
   setTrace(trace: Trace): void;
   /** Wrap SDK elements so they are tracked and released with the others. */
   wrap(elements: Element[]): PageElement[];
-  /** Put the strokes from the last line-erase back. Returns a message. */
+  /** Put the strokes from the last margin-wave erase back. Returns a message. */
   restoreLastErase(): Promise<string>;
 }
 
 export function createHost(pen: PenTracker): DeviceHost {
   // Elements read while handling the current stroke; freed in release().
   let fetched: Element[] = [];
-  // Strokes removed by the last line-erase, kept in the native cache so
+  // Strokes removed by the last margin-wave erase, kept in the native cache so
   // insertPageElements can put them back.
   let erased: ErasedStrokes | null = null;
 

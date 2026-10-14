@@ -569,7 +569,7 @@ describe('handlePenUp: margin wave to erase', () => {
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'writing on both sides of the mark, or touching it',
+      reason: 'writing on both sides of the wave, or touching it',
     });
     expect(host.deleted).toEqual([]);
   });
@@ -580,7 +580,7 @@ describe('handlePenUp: margin wave to erase', () => {
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'no writing next to the mark',
+      reason: 'no writing next to the wave',
     });
   });
 
@@ -612,7 +612,7 @@ describe('handlePenUp: margin wave to erase', () => {
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'mark too close to the writing (10 px, needs 20)',
+      reason: 'wave too close to the writing (10 px, needs 20)',
     });
     expect(host.deleted).toEqual([]);
   });
@@ -642,10 +642,13 @@ describe('handlePenUp: margin wave to erase', () => {
   it('respects the per-gesture switches', async () => {
     const mark = el(leftShell);
     const loop = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([...row(), mark, loop]);
-    const off = {gestures: {loopSelect: false, marginErase: false}};
+    const line = el(straight({x: 100, y: 900}, {x: 700, y: 902}));
+    const host = fakeHost([...row(), mark, loop, line]);
+    const off = {
+      gestures: {loopSelect: false, marginErase: false, lineSelect: false},
+    };
 
-    for (const g of [mark, loop]) {
+    for (const g of [mark, loop, line]) {
       expect(await handlePenUp([g], host, DEFAULT_CONFIG, off)).toEqual({
         kind: 'ignored',
         reason: 'not a gesture',
@@ -724,12 +727,13 @@ describe('handlePenUp: line to select above or below', () => {
       reason: 'line crosses the writing',
     });
 
-    // 160 px: worth a look, but under 12 % of the 1404 px page.
-    const short = el(straight({x: 100, y: 800}, {x: 260, y: 800}));
+    // 200 px: worth a look, but under 12 % of a 1920 px page.
+    const short = el(straight({x: 100, y: 800}, {x: 300, y: 800}));
     const host3 = fakeHost([el(word(100, 600)), short]);
+    host3.getPageSize = async () => ({width: 1920, height: 2560});
     expect(await handlePenUp([short], host3, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'line too short (160 px, needs 168)',
+      reason: 'line too short (200 px, needs 230)',
     });
   });
 
@@ -753,14 +757,84 @@ describe('handlePenUp: line to select above or below', () => {
     );
   });
 
-  it('takes a short line: a fifth of the page is enough', async () => {
-    const line = el(straight({x: 100, y: 800}, {x: 380, y: 806}));
+  it('takes a short line: 12 % of the page is enough', async () => {
+    const line = el(straight({x: 100, y: 800}, {x: 275, y: 806}));
     const host = fakeHost([el(word(100, 600)), line]);
 
     expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
       kind: 'selected',
       count: 1,
     });
+  });
+
+  it('never reads the page for a line under 168 px, in any units', async () => {
+    const short = el(straight({x: 100, y: 800}, {x: 260, y: 800}));
+    // The same 160 px line as the digitiser reports it: turned a quarter
+    // and 8.45 times larger (EMR units).
+    const emr = el(
+      straight(
+        {x: 800 * 8.45, y: 1300 * 8.45},
+        {x: 800 * 8.45, y: 1140 * 8.45},
+      ),
+    );
+    for (const stroke of [short, emr]) {
+      const host = fakeHost([stroke]);
+      let reads = 0;
+      host.getPageElements = async () => {
+        reads++;
+        return [stroke];
+      };
+      const lines: string[] = [];
+      expect(
+        await handlePenUp([stroke], host, DEFAULT_CONFIG, {
+          trace: l => lines.push(l),
+        }),
+      ).toEqual({kind: 'ignored', reason: 'not a gesture'});
+      expect(reads).toBe(0);
+      expect(lines).toContain('  line check: too short (160 px, needs 168)');
+    }
+  });
+
+  it('takes a short wobbly line for a line when nothing is level with it', async () => {
+    // 260 x 32 px with 3 bounces: passes for a wave, but has no writing
+    // beside it to erase.
+    const wobbly = Array.from({length: 61}, (_, i) => ({
+      x: 100 + (260 * i) / 60,
+      y: 800 - 16 * Math.sin((3 * Math.PI * i) / 60),
+    }));
+    const line = el(wobbly);
+    const host = fakeHost([el(word(100, 600)), line]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([line], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({kind: 'selected', count: 1});
+    expect(lines).toContain('no writing next to the wave, trying a line');
+  });
+
+  it('leaves a blank after a label as ink ("Name: ____")', async () => {
+    const blank = el(straight({x: 220, y: 606}, {x: 480, y: 606}));
+    const host = fakeHost([el(word(100, 400)), el(word(100, 600, 100)), blank]);
+
+    expect(await handlePenUp([blank], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'writing level with the line (a blank or an arrow?)',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('leaves an underline drawn a little low as ink', async () => {
+    // 26 px under the phrase: more than 20, less than 40.
+    const underline = el(straight({x: 95, y: 632}, {x: 330, y: 632}));
+    const host = fakeHost([el(word(100, 600, 220)), underline]);
+
+    expect(await handlePenUp([underline], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+      reason: expect.stringContaining('an underline'),
+    });
+    expect(host.deleted).toEqual([]);
   });
 
   it('never reads the page for a dash', async () => {

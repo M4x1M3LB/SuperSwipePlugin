@@ -98,7 +98,7 @@ export function startGestures(): void {
   });
 }
 
-/** Put back the strokes removed by the last line-erase. */
+/** Put back the strokes removed by the last margin-wave erase. */
 export async function restoreLastErase(): Promise<string> {
   if (!host) {
     return 'Nothing to restore.';

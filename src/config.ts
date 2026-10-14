@@ -11,26 +11,34 @@ import {
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  /** The margin mark: a sideways wave with 3 bounces or more ("∿∿"). */
+  /** The margin wave: a sideways wave with 3 bounces or more ("∿∿"). */
   wave: WaveOptions;
   /** The separator line: straight, horizontal. */
   straightLine: StraightLineOptions;
   /** A separator line spans at least this fraction of the page width... */
   lineMinWidthRatio: number;
-  /** ...and no writing comes closer than this, in px (an underline). */
+  /** ...no writing comes closer than this, in px, below or beside it... */
   lineClearance: number;
+  /** ...nor this, in px, above it over its span (an underline). */
+  lineUnderlineClearance: number;
   /**
-   * Shortest line, in the pen-up copy's own units, worth reading the page
-   * for. The device's other unit (EMR) is larger than page px, so this is
-   * never stricter than it reads.
+   * Shortest line, in page px, worth reading the page for: 12 % of 1404 px,
+   * the narrowest page, so a shorter one would be refused there anyway.
    */
   lineMinPenUpLength: number;
-  /** Which strokes form the line of writing next to the mark. */
+  /**
+   * A pen-up copy with a coordinate above this is in the digitiser's units
+   * (EMR): pages are at most 3414 px...
+   */
+  maxPagePx: number;
+  /** ...and EMR units per page px, to measure it (from the SDK's PointUtils). */
+  emrPerPx: number;
+  /** Which strokes form the line of writing next to the wave. */
   writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
   eraseTouchTolerance: number;
   /**
-   * Pen types whose strokes may trigger a selection. The SDK documents
+   * Pen types whose strokes may trigger a gesture. The SDK documents
    * 10 (fineliner/technical), 16 (pressure), 15 (calligraphy); 1 is an older
    * ink pen id seen on devices. Marker (11) is left out on purpose: circling
    * or marking with the highlighter is almost always emphasis.
@@ -56,7 +64,10 @@ export const DEFAULT_CONFIG: SelectorConfig = {
   straightLine: DEFAULT_STRAIGHT_LINE_OPTIONS,
   lineMinWidthRatio: 0.12,
   lineClearance: 20,
-  lineMinPenUpLength: 150,
+  lineUnderlineClearance: 40,
+  lineMinPenUpLength: 168,
+  maxPagePx: 3500,
+  emrPerPx: 8.45,
   writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],

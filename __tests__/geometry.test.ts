@@ -298,21 +298,21 @@ describe('findWritingLine', () => {
     });
     expect(
       findWritingLine(right, [box(100, 500), box(500, 500)], undefined, 'left'),
-    ).toEqual({reason: 'writing on the right of the mark'});
+    ).toEqual({reason: 'writing on the right of the wave'});
     expect(findWritingLine(right, [box(380, 500)], undefined, 'left')).toEqual({
-      reason: 'mark touches the writing',
+      reason: 'wave touches the writing',
     });
   });
 
-  it('refuses when there is writing on the left of the mark', () => {
+  it('refuses when there is writing on the left of the wave', () => {
     expect(findWritingLine(mark, [box(0, 500, 20), box(100, 500)])).toEqual({
-      reason: 'writing on the left of the mark',
+      reason: 'writing on the left of the wave',
     });
   });
 
   it('refuses a mark touching the writing (a written "x")', () => {
     expect(findWritingLine(mark, [box(65, 500)])).toEqual({
-      reason: 'mark touches the writing',
+      reason: 'wave touches the writing',
     });
   });
 
@@ -320,13 +320,13 @@ describe('findWritingLine', () => {
     // Mark 40 px tall: the writing must start 30 px or more after it.
     expect(findWritingLine(mark, [box(100, 500)])).toEqual({indices: [0]});
     expect(findWritingLine(mark, [box(90, 500)])).toEqual({
-      reason: 'mark too close to the writing (20 px, needs 30)',
+      reason: 'wave too close to the writing (20 px, needs 30)',
     });
   });
 
   it('refuses a mark with nothing next to it', () => {
     expect(findWritingLine(mark, [box(100, 700)])).toEqual({
-      reason: 'no writing next to the mark',
+      reason: 'no writing next to the wave',
     });
   });
 });

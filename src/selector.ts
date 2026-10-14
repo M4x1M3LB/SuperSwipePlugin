@@ -6,9 +6,9 @@
  * - Margin wave to erase: a sideways wave with 3 bounces or more ("∿∿", a
  *   tilde with an extra bounce), in the margin level with a line of
  *   writing, erases that line and the wave.
- * - Line to select: a straight horizontal line across the page, clear of
- *   the writing, selects everything above or below it (asking which when
- *   there is writing on both sides).
+ * - Line to select: a straight horizontal line, a few words long or more,
+ *   clear of the writing, selects everything above or below it (asking
+ *   which when there is writing on both sides).
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -104,7 +104,9 @@ export type Outcome =
 
 const STROKE = 0;
 
-/** Everything both gestures need once a stroke has been recognised. */
+const NO_WRITING = 'no writing next to the wave';
+
+/** Everything a gesture needs once its stroke has been recognised. */
 interface Context {
   host: Host;
   config: SelectorConfig;
@@ -188,15 +190,30 @@ export async function handlePenUp(
     }
     if (gestures.lineSelect ?? true) {
       // Long enough, so a dash or a "t" bar never makes us read the page.
-      const long = (r: ReturnType<typeof checkStraightLine>) =>
-        'from' in r && distance(r.from, r.to) >= config.lineMinPenUpLength;
+      // Measured in page px: a pen-up copy in the digitiser's units (EMR,
+      // larger than any page) is scaled down first.
+      const unit = penUpUnit(pts, config);
       const line = checkStraightLine(pts, config.straightLine);
       const swapped = pts.map(p => ({x: p.y, y: p.x}));
-      if (long(line) || long(checkStraightLine(swapped, config.straightLine))) {
+      const swappedLine = checkStraightLine(swapped, config.straightLine);
+      const found =
+        'from' in line ? line : 'from' in swappedLine ? swappedLine : null;
+      const length = found ? distance(found.from, found.to) / unit : 0;
+      if (found && length >= config.lineMinPenUpLength) {
         [gesture, points, isLine] = [candidate, pts, true];
         break;
       }
-      trace(`  line check: ${'reason' in line ? line.reason : 'too short'}`);
+      trace(
+        `  line check: ${
+          found
+            ? `too short (${Math.round(length)} px, needs ${
+                config.lineMinPenUpLength
+              })`
+            : 'reason' in line
+            ? line.reason
+            : ''
+        }`,
+      );
     }
   }
   if (!gesture) {
@@ -288,7 +305,35 @@ export async function handlePenUp(
       mark.bottom - mark.top,
     )} px`,
   );
-  return eraseNextToMark(ctx, mark);
+  const erased = await eraseNextToMark(ctx, mark);
+  if (
+    erased.kind !== 'ignored' ||
+    erased.reason !== NO_WRITING ||
+    !(gestures.lineSelect ?? true)
+  ) {
+    return erased;
+  }
+  // A wobbly line under 400 px can pass for a wave: with no writing level
+  // with it, it is tried as a line. A wave beside writing is never affected.
+  const line = checkStraightLine(stored, config.straightLine);
+  if (!('from' in line)) {
+    return erased;
+  }
+  trace('no writing next to the wave, trying a line');
+  const selected = await selectBesideLine(ctx, stored, line, keepAlive);
+  return selected.kind === 'ignored' &&
+    selected.reason.startsWith('line too short')
+    ? erased
+    : selected;
+}
+
+/**
+ * The pen-up copy's unit, in page px: 1, or the digitiser's (EMR) scale
+ * when its coordinates are larger than any page can be.
+ */
+function penUpUnit(points: Pt[], config: SelectorConfig): number {
+  const largest = Math.max(...points.map(p => Math.max(p.x, p.y)), 0);
+  return largest > config.maxPagePx ? config.emrPerPx : 1;
 }
 
 function fmt(p: Pt | undefined): string {
@@ -381,13 +426,22 @@ async function selectBesideLine(
       return {kind: 'ignored', reason: 'line crosses the writing'};
     }
     const box = boundingBox(pts);
-    // Writing just above or below the line, in its span: an underline.
+    // Writing just above the line, in its span: an underline (drawn
+    // further below the letters than writing comes above a separator).
+    // Just below it, in its span: writing under a rule. Level with it,
+    // beside it: a blank after a label ("Name: ___") or an arrow.
     const overlaps = box.right > lineBox.left && box.left < lineBox.right;
     const gap = Math.max(box.top - lineBox.bottom, lineBox.top - box.bottom);
-    if (overlaps && gap < config.lineClearance) {
+    const clearance =
+      overlaps && box.bottom <= lineBox.top
+        ? config.lineUnderlineClearance
+        : config.lineClearance;
+    if (gap < clearance) {
       return {
         kind: 'ignored',
-        reason: `writing ${Math.round(gap)} px from the line (an underline?)`,
+        reason: overlaps
+          ? `writing ${Math.round(gap)} px from the line (an underline?)`
+          : 'writing level with the line (a blank or an arrow?)',
       };
     }
     ((box.top + box.bottom) / 2 < lineY ? above : below).push(box);
@@ -431,7 +485,8 @@ async function selectBesideLine(
 }
 
 /**
- * Erase the line of writing to the right of a margin mark, the strokes
+ * Erase the line of writing beside a margin wave (on whichever side the
+ * writing is), the strokes
  * touching it (a "t" bar, a descender), and the mark.
  */
 async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
@@ -452,12 +507,12 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   const left = findWritingLine(mark, boxes, config.writingLine, 'left');
   const line = 'indices' in right ? right : left;
   if ('reason' in line) {
-    const none = 'no writing next to the mark';
+    const none = NO_WRITING;
     const reasons = [right, left].map(r => ('reason' in r ? r.reason : none));
-    const tooClose = reasons.find(r => r.startsWith('mark too close'));
+    const tooClose = reasons.find(r => r.startsWith('wave too close'));
     const reason = reasons.every(r => r === none)
       ? none
-      : tooClose ?? 'writing on both sides of the mark, or touching it';
+      : tooClose ?? 'writing on both sides of the wave, or touching it';
     return {kind: 'ignored', reason};
   }
   ctx.trace(`erasing the line on its ${'indices' in right ? 'right' : 'left'}`);

@@ -5,9 +5,9 @@ A Supernote plugin for NOTE files, with three pen gestures:
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
-- **Line to select:** draw a straight line across the page, clear of the
-  writing; everything above or below it is selected. With writing on both
-  sides, the device asks which.
+- **Line to select:** draw a straight horizontal line (a few words long or
+  more) clear of the writing; everything above or below it is selected.
+  With writing on both sides, the device asks which.
 - **Margin wave to erase:** draw a sideways wave with three bounces or more
   (∿∿, a tilde with an extra bounce) in the margin next to a line of
   writing, left or right, and that whole line is erased, with the wave.
@@ -28,8 +28,9 @@ All gestures:
 - Are found even when quickly followed by more writing: the device delivers
   strokes drawn in quick succession together, and every one of them is
   checked, newest first.
-- Never miss a stroke drawn while the previous one is still being handled:
-  it is handled next, instead of being dropped.
+- Strokes drawn while the previous one is still being handled are not
+  dropped: they are checked next, together (the newest gesture among them
+  wins).
 - Read the page's strokes in parallel batches, which is much faster on a
   full page.
 
@@ -55,16 +56,21 @@ Line to select:
 - One roughly straight stroke, within 15° of horizontal, at least 12 % of
   the page wide (about 170 px, a few words). Hand-drawn is fine: it may bow
   by up to 10 % of its length and shake (path up to 1.3 × its length). A
-  wobbly line that passes for a wave is taken as a line once it turns out
-  wider than a wave can be.
-- It must not cross any writing (a strike-through) or come within 20 px of
-  writing over its length (an underline): those stay ink.
+  wobbly line that passes for a wave is taken as a line when it is wider
+  than a wave can be (400 px), or when there is no writing level with it.
+- It must not cross any writing (a strike-through), come within 40 px under
+  writing over its length (an underline), within 20 px above writing, or
+  have writing level with it beside it (a blank after a label, an arrow):
+  those stay ink.
 - Writing on one side only: that side is selected at once. On both sides:
   a dialog asks "Above" or "Below"; no answer, nothing happens.
 - Selected: every element whose centre is on that side, across the whole
   page width. The line is removed.
-- A line shorter than 150 px never causes the page to be read, so dashes
-  and "t" bars cost nothing.
+- A stroke shorter than 168 px (12 % of the narrowest page) never causes
+  the page to be read, so dashes, "t" bars and short underlines cost
+  nothing. This holds whichever units the device reports the stroke in.
+  Longer underlines and strike-throughs are checked against the page
+  (which clears its undo history) and stay ink.
 
 Margin wave to erase:
 
@@ -114,15 +120,15 @@ Margin wave to erase:
   not documented, so the trace shows its raw answer ("dialog returned
   true/false") in case they come out swapped.
 - **Gestures that are also ordinary ink.** Circling a word selects it, a
-  long line clear of the writing selects, and a wave beside a line erases
-  it. A wavy word (such as a cursive "mm") written alone at the end of a
+  horizontal line a few words long clear of the writing (a divider)
+  selects, and a wave beside a line erases it. A wavy word (such as a cursive "mm") written alone at the end of a
   line, after a wide gap, can be taken for the wave: **Restore last erase**
   brings the line back. Use the marker for those, or turn a gesture off
   from the plugin screen.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.22.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.23.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
@@ -159,6 +165,7 @@ Layout:
 | `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, dialog, erase restore |
 | `src/plugin.ts` | Wires the pen-up event to the selector, queues strokes while busy |
 | `src/config.ts` | Thresholds (pen types, loop, line and wave rules) |
+| `src/status.ts` | State shared with the plugin screen: switches, last result, trace, recent strokes |
 
 `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
 will treat it as a different plugin. Bump `versionCode` for each release.
