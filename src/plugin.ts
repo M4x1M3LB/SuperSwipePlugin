@@ -1,10 +1,8 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
 import {createHost, PenTracker, type DeviceHost} from './host';
-import {handlePenUp, withTimeout, type Outcome} from './selector';
+import {handlePenUp, type Outcome} from './selector';
 import {status} from './status';
-
-const TIMED_OUT: Outcome = {kind: 'failed', reason: 'timed out'};
 
 let host: DeviceHost | null = null;
 
@@ -15,31 +13,63 @@ export function startGestures(): void {
   const device = createHost(pen);
   host = device;
 
-  let busy = false;
+  // The stroke being handled, if any. Timers cannot be trusted (the host may
+  // pause them once the plugin view has been shown), so a stroke that is
+  // still busy after the time limit is abandoned when the next one arrives.
+  let busy: {since: number; abandon: () => void} | null = null;
+
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
-      const {loopSelect, lineErase} = status.gestures();
-      if (busy || (!loopSelect && !lineErase) || !Array.isArray(msg)) {
+      status.countPenUp();
+      const gestures = status.gestures();
+      if (
+        (!gestures.loopSelect && !gestures.lineErase) ||
+        !Array.isArray(msg)
+      ) {
         return;
       }
-      busy = true;
+      if (busy) {
+        if (Date.now() - busy.since < DEFAULT_CONFIG.timeoutMs) {
+          return;
+        }
+        busy.abandon();
+      }
+
+      const lines: string[] = [];
+      const trace = (line: string) => {
+        lines.push(line);
+      };
+      let abandoned = false;
+      const current = {
+        since: Date.now(),
+        abandon: () => {
+          abandoned = true;
+          trace('abandoned: took too long');
+          status.setLast({kind: 'failed', reason: 'timed out'}, lines);
+        },
+      };
+      busy = current;
+      device.setTrace(trace);
+
       const elements = device.wrap(msg as Element[]);
-      // Once we stop waiting, the stroke must not edit the page late.
-      let gaveUp = false;
-      const work = handlePenUp(
-        elements,
-        device,
-        DEFAULT_CONFIG,
-        status.gestures(),
-        () => gaveUp,
-      );
-      withTimeout(work, DEFAULT_CONFIG.timeoutMs, TIMED_OUT)
-        .catch((e: unknown): Outcome => ({kind: 'failed', reason: String(e)}))
+      handlePenUp(elements, device, DEFAULT_CONFIG, {
+        gestures,
+        isCancelled: () => abandoned,
+        trace,
+      })
+        .catch(
+          (e: unknown): Outcome => ({
+            kind: 'failed',
+            reason: e instanceof Error ? e.message : String(e),
+          }),
+        )
         .then(outcome => {
-          gaveUp = true;
-          status.setLastOutcome(outcome);
+          if (busy !== current) {
+            return; // abandoned; a newer stroke owns the host now
+          }
+          status.setLast(outcome, lines);
           device.release();
-          busy = false;
+          busy = null;
         });
     },
   });

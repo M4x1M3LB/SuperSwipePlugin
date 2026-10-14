@@ -8,6 +8,8 @@ type Listener = () => void;
 
 let gestures: Gestures = {loopSelect: true, lineErase: true};
 let lastOutcome: Outcome | null = null;
+let lastTrace: string[] = [];
+let penUpCount = 0;
 const listeners = new Set<Listener>();
 
 function notify() {
@@ -20,9 +22,17 @@ export const status = {
     gestures = {...gestures, [name]: on};
     notify();
   },
+  /** Pen-up events received from the host since the plugin started. */
+  penUpCount: () => penUpCount,
+  countPenUp() {
+    penUpCount++;
+  },
   lastOutcome: () => lastOutcome,
-  setLastOutcome(outcome: Outcome) {
+  /** Step-by-step log of the last stroke, for diagnosing on the device. */
+  lastTrace: () => lastTrace,
+  setLast(outcome: Outcome, trace: string[]) {
     lastOutcome = outcome;
+    lastTrace = trace;
     notify();
   },
   subscribe(listener: Listener): () => void {

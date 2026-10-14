@@ -75,6 +75,16 @@ function App(): React.JSX.Element {
       {message && <Text style={styles.body}>{message}</Text>}
 
       <Text style={styles.status}>{describeOutcome(s.lastOutcome())}</Text>
+      <Text style={styles.traceLine}>Strokes received: {s.penUpCount()}</Text>
+      {s.lastTrace().length > 0 && (
+        <View style={styles.trace}>
+          {s.lastTrace().map((line, i) => (
+            <Text key={i} style={styles.traceLine}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      )}
       <Text style={styles.note}>
         Note: gestures clear the page's undo history (Supernote limitation). Use
         Restore last erase to undo an erase.
@@ -136,6 +146,17 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: '#000000',
     marginTop: 24,
+  },
+  trace: {
+    marginTop: 12,
+    borderLeftWidth: 2,
+    borderLeftColor: '#000000',
+    paddingLeft: 12,
+  },
+  traceLine: {
+    fontSize: 16,
+    color: '#000000',
+    fontFamily: 'monospace',
   },
   note: {
     fontSize: 18,

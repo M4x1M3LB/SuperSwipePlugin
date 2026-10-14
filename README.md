@@ -49,7 +49,8 @@ Line to erase:
 
 - **Gestures clear the page's undo history.** The only SDK call that can
   delete specific strokes is `deletePageElements`, and it resets undo history
-  on the page (measured on device by other plugin authors). For erases, use
+  on the page (measured on device by other plugin authors). Reading the
+  page also requires saving the note first, which resets it too. For erases, use
   **Restore last erase** instead. It can fail if the device reclaimed the
   plugin's memory in the meantime.
 - **The selection is a rectangle.** `lassoElements` only accepts a rectangle,
@@ -70,8 +71,9 @@ Line to erase:
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
-happened to the last stroke. The switches reset when the plugin host
-restarts.
+happened to the last stroke, with a step-by-step trace and the number of
+strokes the plugin has received (useful when reporting a problem). The
+switches reset when the plugin host restarts.
 
 ## Development
 

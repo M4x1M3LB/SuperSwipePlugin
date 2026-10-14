@@ -19,9 +19,28 @@ interface Response<T> {
   error?: {code: number; message: string} | null;
 }
 
-function resultOf<T>(res: unknown): T | null {
-  const r = res as Response<T> | null | undefined;
-  return r?.success ? r.result ?? null : null;
+type Trace = (line: string) => void;
+
+/** Unwrap an APIResponse, tracing failures with their error code. */
+async function call<T>(
+  name: string,
+  request: () => Promise<unknown>,
+  trace: Trace,
+): Promise<T | null> {
+  try {
+    const r = (await request()) as Response<T> | null | undefined;
+    if (r?.success) {
+      return r.result ?? null;
+    }
+    trace(
+      `${name} failed: ${r?.error?.message ?? 'no result'} (code ${
+        r?.error?.code ?? '?'
+      })`,
+    );
+  } catch (e) {
+    trace(`${name} threw: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return null;
 }
 
 const FILE_PERMISSIONS = [
@@ -34,17 +53,29 @@ const ACTION_DOWN = 0;
 const ACTION_UP = 1;
 const ACTION_CANCEL = 3;
 
-/** Tracks whether the EMR pen is currently touching the screen. */
+/** A pen that sent no motion event for this long is treated as lifted. */
+const PEN_STALE_MS = 1000;
+
+/**
+ * Tracks whether the EMR pen is currently touching the screen.
+ *
+ * Waiting is driven by motion events, not timers: once the plugin view has
+ * been shown, the host may stop running the plugin's timers.
+ */
 export class PenTracker {
   private down = false;
+  private lastEventAt = 0;
+  private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
+    [];
 
   start(): void {
-    PluginManager.registerMotionListener(2, {
+    PluginManager.registerMotionListener(1, {
       onMsg: (msg: unknown) => {
         const event = msg as MotionEvent;
         if (event?.toolType !== TOOL_PEN) {
           return;
         }
+        this.lastEventAt = Date.now();
         if (event.action === ACTION_DOWN) {
           this.down = true;
         } else if (
@@ -53,15 +84,33 @@ export class PenTracker {
         ) {
           this.down = false;
         }
+        this.wakeWaiters();
       },
     });
   }
 
-  async waitForUp(maxWaitMs: number): Promise<void> {
-    const deadline = Date.now() + maxWaitMs;
-    while (this.down && Date.now() < deadline) {
-      await new Promise<void>(resolve => setTimeout(resolve, 50));
+  private isUp(): boolean {
+    return !this.down || Date.now() - this.lastEventAt > PEN_STALE_MS;
+  }
+
+  private wakeWaiters(): void {
+    const now = Date.now();
+    this.waiters = this.waiters.filter(w => {
+      if (this.isUp() || now - w.since > w.maxWaitMs) {
+        w.resolve();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  waitForUp(maxWaitMs: number): Promise<void> {
+    if (this.isUp()) {
+      return Promise.resolve();
     }
+    return new Promise(resolve => {
+      this.waiters.push({since: Date.now(), maxWaitMs, resolve});
+    });
   }
 }
 
@@ -165,6 +214,14 @@ function recycleAll(elements: Element[]): void {
 
 /** Make sure FILE:READ and FILE:WRITE are granted, asking the user if needed. */
 export async function ensureFileAccess(): Promise<boolean> {
+  try {
+    return await requestFileAccess();
+  } catch {
+    return false;
+  }
+}
+
+async function requestFileAccess(): Promise<boolean> {
   for (const permission of FILE_PERMISSIONS) {
     if ((await PluginManager.hasPermission(permission)) === 1) {
       continue;
@@ -188,6 +245,8 @@ interface ErasedStrokes {
 }
 
 export interface DeviceHost extends Host {
+  /** Where SDK failures are reported while handling a stroke. */
+  setTrace(trace: Trace): void;
   /** Wrap SDK elements so they are tracked and released with the others. */
   wrap(elements: Element[]): PageElement[];
   /** Put the strokes from the last line-erase back. Returns a message. */
@@ -201,6 +260,8 @@ export function createHost(pen: PenTracker): DeviceHost {
   // insertPageElements can put them back.
   let erased: ErasedStrokes | null = null;
 
+  let trace: Trace = () => {};
+
   const wrap = (elements: Element[]) => {
     fetched.push(...elements);
     return elements.map(toPageElement);
@@ -209,23 +270,46 @@ export function createHost(pen: PenTracker): DeviceHost {
   return {
     wrap,
 
-    async getCurrentFilePath() {
-      return resultOf<string>(await PluginCommAPI.getCurrentFilePath());
+    setTrace(t) {
+      trace = t;
     },
 
-    async getCurrentPageNum() {
-      return resultOf<number>(await PluginCommAPI.getCurrentPageNum());
+    getCurrentFilePath() {
+      return call<string>(
+        'getCurrentFilePath',
+        () => PluginCommAPI.getCurrentFilePath(),
+        trace,
+      );
     },
 
-    async getPageSize(path, page) {
-      return resultOf<{width: number; height: number}>(
-        await PluginFileAPI.getPageSize(path, page),
+    getCurrentPageNum() {
+      return call<number>(
+        'getCurrentPageNum',
+        () => PluginCommAPI.getCurrentPageNum(),
+        trace,
+      );
+    },
+
+    getPageSize(path, page) {
+      return call<{width: number; height: number}>(
+        'getPageSize',
+        () => PluginFileAPI.getPageSize(path, page),
+        trace,
       );
     },
 
     async getPageElements(path, page) {
-      const elements = resultOf<Element[]>(
-        await PluginFileAPI.getElements(page, path),
+      // getElements reads the note file: save first so it contains the
+      // stroke that was just drawn.
+      await call(
+        'saveCurrentNote',
+        () => PluginNoteAPI.saveCurrentNote(),
+        trace,
+      );
+      const elements = await call<Element[]>(
+        'getElements',
+        () => PluginFileAPI.getElements(page, path),
+        trace,
       );
       return wrap(elements ?? []);
     },
@@ -237,11 +321,12 @@ export function createHost(pen: PenTracker): DeviceHost {
     },
 
     async deleteElements(numsInPage, page, layer) {
-      return (
-        resultOf<boolean>(
-          await PluginCommAPI.deletePageElements(numsInPage, page, layer),
-        ) === true
+      const ok = await call<boolean>(
+        'deletePageElements',
+        () => PluginCommAPI.deletePageElements(numsInPage, page, layer),
+        trace,
       );
+      return ok === true;
     },
 
     rememberErased(path, page, layer, elements) {
@@ -262,8 +347,12 @@ export function createHost(pen: PenTracker): DeviceHost {
         return 'Open the note the strokes were erased from, then try again.';
       }
       const {page, layer, elements} = erased;
-      const res = await PluginCommAPI.insertPageElements(elements, page, layer);
-      if (resultOf<boolean>(res) !== true) {
+      const ok = await call<boolean>(
+        'insertPageElements',
+        () => PluginCommAPI.insertPageElements(elements, page, layer),
+        trace,
+      );
+      if (ok !== true) {
         return 'Could not restore the erased strokes.';
       }
       recycleAll(elements);
@@ -273,14 +362,21 @@ export function createHost(pen: PenTracker): DeviceHost {
     },
 
     async lassoRect(rect: Box) {
-      return (
-        resultOf<boolean>(await PluginCommAPI.lassoElements(rect)) === true
+      const ok = await call<boolean>(
+        'lassoElements',
+        () => PluginCommAPI.lassoElements(rect),
+        trace,
       );
+      return ok === true;
     },
 
     async refreshPage() {
-      await PluginNoteAPI.saveCurrentNote();
-      await PluginCommAPI.reloadFile();
+      await call(
+        'saveCurrentNote',
+        () => PluginNoteAPI.saveCurrentNote(),
+        trace,
+      );
+      await call('reloadFile', () => PluginCommAPI.reloadFile(), trace);
     },
 
     release() {

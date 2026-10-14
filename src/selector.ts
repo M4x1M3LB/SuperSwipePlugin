@@ -45,6 +45,10 @@ export interface Host {
     path: string,
     page: number,
   ): Promise<{width: number; height: number} | null>;
+  /**
+   * All elements on a page. Implementations must make sure the page read
+   * includes the stroke that was just drawn (the SDK reads the saved file).
+   */
   getPageElements(path: string, page: number): Promise<PageElement[]>;
   /** Make sure FILE:READ and FILE:WRITE are granted, asking if needed. */
   ensureFileAccess(): Promise<boolean>;
@@ -93,15 +97,29 @@ interface Context {
   /** Other elements on the same page and layer. */
   others: PageElement[];
   isCancelled: () => boolean;
+  trace: (line: string) => void;
+}
+
+export interface HandleOptions {
+  gestures?: Gestures;
+  /** Checked right before the page is modified. */
+  isCancelled?: () => boolean;
+  /** Receives one line per decision, shown on the plugin screen. */
+  trace?: (line: string) => void;
 }
 
 export async function handlePenUp(
   penUpElements: PageElement[],
   host: Host,
   config: SelectorConfig,
-  gestures: Gestures = {loopSelect: true, lineErase: true},
-  isCancelled: () => boolean = () => false,
+  options: HandleOptions = {},
 ): Promise<Outcome> {
+  const gestures = options.gestures ?? {loopSelect: true, lineErase: true};
+  const isCancelled = options.isCancelled ?? (() => false);
+  const trace = options.trace ?? (() => {});
+
+  const types = penUpElements.map(e => `${e.type}/${e.penType}`).join(', ');
+  trace(`pen-up: ${penUpElements.length} element(s) [type/pen ${types}]`);
   const gesture = [...penUpElements]
     .reverse()
     .find(
@@ -115,6 +133,7 @@ export async function handlePenUp(
   }
 
   const points = await gesture.outline();
+  trace(`stroke: pen ${gesture.penType}, ${points.length} points`);
   const polygon = gestures.loopSelect
     ? findClosedLoop(points, config.loop)
     : null;
@@ -125,27 +144,33 @@ export async function handlePenUp(
   if (!polygon && !line) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
+  trace(polygon ? 'shape: closed loop' : 'shape: straight line');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
     return {kind: 'ignored', reason: 'only NOTE files are supported'};
   }
-  const page = gesture.pageNum;
+  // The pen-up element is not committed to the page yet, so its page fields
+  // may be unset: ask the host which page is showing.
+  const page = (await host.getCurrentPageNum()) ?? gesture.pageNum;
+  trace(`file: ${path.split('/').pop()}, page ${page}`);
 
   if (!(await host.ensureFileAccess())) {
     return {kind: 'failed', reason: 'file access not granted'};
   }
 
   const elements = await host.getPageElements(path, page);
+  trace(`page elements: ${elements.length}`);
   const stroke = await findStoredStroke(elements, gesture, points);
   if (!stroke) {
     return {kind: 'failed', reason: 'gesture stroke not found on page'};
   }
+  trace(`gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}`);
   const others = elements.filter(
     e => e !== stroke && e.layerNum === stroke.layerNum,
   );
 
-  const ctx = {host, config, path, page, stroke, others, isCancelled};
+  const ctx = {host, config, path, page, stroke, others, isCancelled, trace};
   return polygon ? selectInLoop(ctx, polygon) : eraseAlongLine(ctx, line!);
 }
 
@@ -162,6 +187,7 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     }
   }
   const enclosed = unionBoxes(boxes);
+  ctx.trace(`enclosed: ${boxes.length} element(s)`);
   if (!enclosed) {
     // Plain drawing (an "O", a circle doodle): leave the ink alone.
     return {kind: 'ignored', reason: 'loop encloses nothing'};
@@ -180,7 +206,9 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
 
+  ctx.trace('loop stroke removed');
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
+  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
     // Without a lasso the host does not redraw, and the deleted loop stays
     // visible until something else repaints.
@@ -202,6 +230,7 @@ async function eraseAlongLine(ctx: Context, line: Segment): Promise<Outcome> {
       cut.push(element);
     }
   }
+  ctx.trace(`cut: ${cut.length} stroke(s)`);
   if (cut.length < config.eraseMinCrossed) {
     // An underline, a divider, a crossed-out letter: leave the ink alone.
     return {kind: 'ignored', reason: `line cuts ${cut.length} strokes`};
@@ -247,7 +276,9 @@ async function findStoredStroke(
   gesture: PageElement,
   points: Pt[],
 ): Promise<PageElement | null> {
-  const byUuid = elements.find(e => e.uuid === gesture.uuid);
+  const byUuid = elements.find(
+    e => e.uuid === gesture.uuid && e.numInPage >= 1,
+  );
   if (byUuid) {
     return byUuid;
   }
@@ -256,12 +287,12 @@ async function findStoredStroke(
   // Newest strokes are at the end of the page list, so search backwards.
   for (let i = elements.length - 1; i >= 0; i--) {
     const e = elements[i];
-    if (e.type !== STROKE || e.penType !== gesture.penType) {
+    if (e.type !== STROKE) {
       continue;
     }
     const pts = await e.outline();
     if (
-      pts.length === points.length &&
+      pts.length > 0 &&
       samePoint(pts[0], first) &&
       samePoint(pts[pts.length - 1], last)
     ) {
@@ -272,21 +303,5 @@ async function findStoredStroke(
 }
 
 function samePoint(a: Pt, b: Pt): boolean {
-  return Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5;
-}
-
-export async function withTimeout<T>(
-  work: Promise<T>,
-  ms: number,
-  onTimeout: T,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>(resolve => {
-    timer = setTimeout(() => resolve(onTimeout), ms);
-  });
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
 }

@@ -1,11 +1,6 @@
 import {DEFAULT_CONFIG} from '../src/config';
 import type {Box, Pt} from '../src/geometry';
-import {
-  handlePenUp,
-  withTimeout,
-  type Host,
-  type PageElement,
-} from '../src/selector';
+import {handlePenUp, type Host, type PageElement} from '../src/selector';
 
 function ellipse(cx: number, cy: number, rx: number, ry: number, n = 80): Pt[] {
   return Array.from({length: n + 1}, (_, i) => {
@@ -203,7 +198,11 @@ describe('handlePenUp', () => {
   it('cancels when the page changed before editing', async () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop], {
-      getCurrentPageNum: async () => 4,
+      // Page 3 when the stroke arrives, page 4 by the time we would edit.
+      getCurrentPageNum: jest
+        .fn<Promise<number | null>, []>()
+        .mockResolvedValueOnce(3)
+        .mockResolvedValue(4),
     });
 
     expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toEqual({
@@ -217,13 +216,9 @@ describe('handlePenUp', () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop]);
 
-    const outcome = await handlePenUp(
-      [loop],
-      host,
-      DEFAULT_CONFIG,
-      {loopSelect: true, lineErase: true},
-      () => true,
-    );
+    const outcome = await handlePenUp([loop], host, DEFAULT_CONFIG, {
+      isCancelled: () => true,
+    });
 
     expect(outcome).toMatchObject({kind: 'ignored'});
     expect(host.deleted).toEqual([]);
@@ -256,6 +251,66 @@ describe('handlePenUp', () => {
       kind: 'failed',
     });
     expect(host.refreshed).toBe(1);
+  });
+});
+
+describe('handlePenUp: device quirks', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  it('uses the page that is showing when the pen-up element has none', async () => {
+    const points = ellipse(520, 500, 200, 120);
+    // As delivered by event_pen_up: not committed yet, no page fields.
+    const penUp = el(points, {
+      uuid: 'pen-up',
+      numInPage: 0,
+      pageNum: undefined as unknown as number,
+    });
+    const stored = el(points, {numInPage: 9});
+    const getPageElements = jest.fn(async () => [el(word(480, 500)), stored]);
+    const host = fakeHost([], {getPageElements});
+
+    expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+    expect(getPageElements).toHaveBeenCalledWith(expect.any(String), 3);
+    expect(host.deleted).toEqual([[9]]);
+  });
+
+  it('matches the saved stroke even if its point list differs slightly', async () => {
+    const points = ellipse(520, 500, 200, 120);
+    const penUp = el(points, {uuid: 'pen-up', numInPage: 0});
+    const saved = [
+      points[0],
+      ...points.slice(1, -1).filter((_, i) => i % 2 === 0),
+      {x: points[points.length - 1].x + 0.8, y: points[points.length - 1].y},
+    ];
+    const stored = el(saved, {numInPage: 4});
+    const host = fakeHost([el(word(480, 500)), stored]);
+
+    expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+    expect(host.deleted).toEqual([[4]]);
+  });
+
+  it('traces each step', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+    const lines: string[] = [];
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'shape: closed loop',
+        'enclosed: 1 element(s)',
+        'loop stroke removed',
+      ]),
+    );
   });
 });
 
@@ -323,7 +378,7 @@ describe('handlePenUp: line to erase', () => {
     const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([...row(), line, loop]);
-    const off = {loopSelect: false, lineErase: false};
+    const off = {gestures: {loopSelect: false, lineErase: false}};
 
     expect(await handlePenUp([line], host, DEFAULT_CONFIG, off)).toEqual({
       kind: 'ignored',
@@ -334,18 +389,5 @@ describe('handlePenUp: line to erase', () => {
       reason: 'not a gesture',
     });
     expect(host.deleted).toEqual([]);
-  });
-});
-
-describe('withTimeout', () => {
-  it('returns the fallback when work takes too long', async () => {
-    const never = new Promise<string>(() => {});
-    expect(await withTimeout(never, 10, 'late')).toBe('late');
-  });
-
-  it('returns the result when work finishes in time', async () => {
-    expect(await withTimeout(Promise.resolve('done'), 1000, 'late')).toBe(
-      'done',
-    );
   });
 });
