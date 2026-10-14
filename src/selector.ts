@@ -3,9 +3,8 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin mark to erase: a ┌ (one stroke) in the left margin, or a ┘ in the
- *   right margin, level with a line of writing, erases that line and the
- *   mark.
+ * - Margin spiral to erase: a small spiral (one stroke) in the margin, level
+ *   with a line of writing, erases that line and the spiral.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
