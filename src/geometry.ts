@@ -35,6 +35,11 @@ export interface LoopOptions {
    */
   minSpanRatio: number;
   /**
+   * How far the stroke must turn in total, in degrees. A loop turns about
+   * 360° (270° for one stopped at three quarters); an L or a "7" only 90°.
+   */
+  minTurnDegrees: number;
+  /**
    * Polygon area divided by bounding-box area. Rejects strokes that double
    * back on themselves (zig-zags, scribbles) which close but enclose nothing.
    */
@@ -48,6 +53,7 @@ export const DEFAULT_LOOP_OPTIONS: LoopOptions = {
   closeGapRatio: 0.2,
   endSearchRatio: 0.35,
   minSpanRatio: 0.6,
+  minTurnDegrees: 240,
   minFillRatio: 0.3,
 };
 
@@ -196,6 +202,9 @@ export function findClosedLoop(
   }
 
   const polygon = points.slice(bestI, bestJ + 1);
+  if (Math.abs(netTurning(polygon)) < options.minTurnDegrees) {
+    return null;
+  }
   const polyBox = boundingBox(polygon);
   const boxArea =
     (polyBox.right - polyBox.left) * (polyBox.bottom - polyBox.top);
@@ -203,6 +212,40 @@ export function findClosedLoop(
     return null;
   }
   return polygon;
+}
+
+/**
+ * Total signed change of direction along a path, in degrees, measured on
+ * points about 1/40 of its length apart so hand jitter does not count.
+ */
+export function netTurning(points: Pt[]): number {
+  const step = Math.max(2, pathLength(points) / 40);
+  const kept = [points[0]];
+  for (const p of points) {
+    if (distance(kept[kept.length - 1], p) >= step) {
+      kept.push(p);
+    }
+  }
+  let total = 0;
+  let previous: number | null = null;
+  for (let i = 1; i < kept.length; i++) {
+    const heading = Math.atan2(
+      kept[i].y - kept[i - 1].y,
+      kept[i].x - kept[i - 1].x,
+    );
+    if (previous !== null) {
+      let delta = heading - previous;
+      while (delta > Math.PI) {
+        delta -= 2 * Math.PI;
+      }
+      while (delta < -Math.PI) {
+        delta += 2 * Math.PI;
+      }
+      total += delta;
+    }
+    previous = heading;
+  }
+  return (total * 180) / Math.PI;
 }
 
 /**
@@ -255,7 +298,7 @@ export interface LineOptions {
   maxDeviationRatio: number;
 }
 
-/** Each stroke of a margin ✕: short and roughly straight. */
+/** Each leg of a margin ┘: short and roughly straight. */
 export const MARK_STROKE_OPTIONS: LineOptions = {
   minPoints: 3,
   minLength: 15,
@@ -396,102 +439,114 @@ export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
   return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
 }
 
-export interface MarkOptions {
-  /** Each stroke must be roughly straight, at least `minLength` px long. */
-  stroke: LineOptions;
-  /** Longest allowed stroke, in px. */
-  maxLength: number;
-  /** Smallest angle between the two strokes, in degrees. */
+export interface CornerOptions {
+  /** Each leg must be roughly straight, at least `minLength` px long. */
+  leg: LineOptions;
+  /** Longest allowed leg, in px. */
+  maxLeg: number;
+  /** Shortest leg divided by the longest one. */
+  minLegRatio: number;
+  /** Angle at the corner, in degrees. */
   minAngle: number;
-  /**
-   * The strokes must cross away from their ends: the crossing point lies in
-   * the middle part of each, leaving `crossMargin` of its length on each side.
-   */
-  crossMargin: number;
-  /** Longest stroke divided by the shortest one. */
-  maxLengthRatio: number;
+  maxAngle: number;
+  /** How far, in degrees, the legs may lean off vertical / horizontal. */
+  axisTolerance: number;
 }
 
-export const DEFAULT_MARK_OPTIONS: MarkOptions = {
-  stroke: MARK_STROKE_OPTIONS,
-  maxLength: 250,
-  minAngle: 35,
-  crossMargin: 0.1,
-  maxLengthRatio: 3,
+export const DEFAULT_CORNER_OPTIONS: CornerOptions = {
+  leg: MARK_STROKE_OPTIONS,
+  maxLeg: 250,
+  minLegRatio: 0.25,
+  minAngle: 60,
+  maxAngle: 120,
+  axisTolerance: 30,
 };
 
-/**
- * Do two strokes form a ✕? Returns its bounding box, or why not.
- *
- * With `checkSize` false only the shape is checked (straight strokes crossing
- * near their middles at a clear angle), which works in any coordinate system
- * or scale: used on the pen-up copies before anything is read from the page.
- */
-export function checkCrossMark(
-  first: Pt[],
-  second: Pt[],
-  options: MarkOptions = DEFAULT_MARK_OPTIONS,
-  checkSize = true,
-): {box: Box} | {reason: string} {
-  const lineOptions = checkSize
-    ? options.stroke
-    : {...options.stroke, minLength: 0, maxDeviationPx: 0};
-  const a = findStraightLine(first, lineOptions);
-  if (!a) {
-    return {reason: 'first stroke not straight or too short'};
-  }
-  const b = findStraightLine(second, lineOptions);
-  if (!b) {
-    return {reason: 'second stroke not straight or too short'};
-  }
-  const la = distance(a.a, a.b);
-  const lb = distance(b.a, b.b);
-  if (la === 0 || lb === 0) {
-    return {reason: 'a stroke has no length'};
-  }
-  if (checkSize && Math.max(la, lb) > options.maxLength) {
-    return {reason: `strokes too long (${Math.round(Math.max(la, lb))} px)`};
-  }
-  const ratio = Math.max(la, lb) / Math.min(la, lb);
-  if (ratio > options.maxLengthRatio) {
-    return {reason: `strokes too unequal (${ratio.toFixed(1)}×)`};
-  }
-  const cos =
-    Math.abs(
-      (a.b.x - a.a.x) * (b.b.x - b.a.x) + (a.b.y - a.a.y) * (b.b.y - b.a.y),
-    ) /
-    (la * lb);
-  const angle = (Math.acos(Math.min(1, cos)) * 180) / Math.PI;
-  if (angle < options.minAngle) {
-    return {reason: `strokes too parallel (${Math.round(angle)}°)`};
-  }
-  // Intersection as a fraction along each stroke.
-  const d =
-    (a.b.x - a.a.x) * (b.b.y - b.a.y) - (a.b.y - a.a.y) * (b.b.x - b.a.x);
-  const t =
-    ((b.a.x - a.a.x) * (b.b.y - b.a.y) - (b.a.y - a.a.y) * (b.b.x - b.a.x)) / d;
-  const u =
-    ((b.a.x - a.a.x) * (a.b.y - a.a.y) - (b.a.y - a.a.y) * (a.b.x - a.a.x)) / d;
-  const m = options.crossMargin;
-  if (t < m || t > 1 - m || u < m || u > 1 - m) {
-    return {
-      reason: `strokes do not cross in their middles (at ${Math.round(
-        t * 100,
-      )} % and ${Math.round(u * 100)} %)`,
-    };
-  }
-  return {box: unionBoxes([boundingBox(first), boundingBox(second)])!};
+/** Angle of the vector a→b against the x axis, folded to 0..90 degrees. */
+function axisAngle(a: Pt, b: Pt): number {
+  const deg =
+    (Math.atan2(Math.abs(b.y - a.y), Math.abs(b.x - a.x)) * 180) / Math.PI;
+  return deg;
 }
 
-/** `checkCrossMark`, keeping only the box. */
-export function findCrossMark(
-  first: Pt[],
-  second: Pt[],
-  options: MarkOptions = DEFAULT_MARK_OPTIONS,
-  checkSize = true,
-): Box | null {
-  const result = checkCrossMark(first, second, options, checkSize);
-  return 'box' in result ? result.box : null;
+/**
+ * Is the stroke a reverse L (┘): a vertical leg and a horizontal leg meeting
+ * at a corner at the bottom right? Drawn either way (down then left, or
+ * right then up). Returns the stroke's bounding box, or why not.
+ *
+ * With `checkLayout` false, only what does not depend on the coordinate
+ * system is checked (one corner, two straight legs, angle, leg ratio): used
+ * on the pen-up copy when it is not known to be in page coordinates.
+ */
+export function checkCornerMark(
+  points: Pt[],
+  options: CornerOptions = DEFAULT_CORNER_OPTIONS,
+  checkLayout = true,
+): {box: Box} | {reason: string} {
+  if (points.length < 2 * options.leg.minPoints) {
+    return {reason: 'too few points'};
+  }
+  const first = points[0];
+  const last = points[points.length - 1];
+  const chordLength = distance(first, last);
+  if (chordLength === 0) {
+    return {reason: 'stroke ends where it starts'};
+  }
+  // The corner: the point furthest from the start-end chord.
+  let k = 0;
+  let furthest = -1;
+  for (let i = 1; i < points.length - 1; i++) {
+    const p = points[i];
+    const d = Math.abs(
+      ((last.x - first.x) * (p.y - first.y) -
+        (last.y - first.y) * (p.x - first.x)) /
+        chordLength,
+    );
+    if (d > furthest) {
+      furthest = d;
+      k = i;
+    }
+  }
+  const legOptions = checkLayout
+    ? options.leg
+    : {...options.leg, minLength: 0, maxDeviationPx: 0};
+  const legA = findStraightLine(points.slice(0, k + 1), legOptions);
+  const legB = findStraightLine(points.slice(k), legOptions);
+  if (!legA || !legB) {
+    return {reason: 'not two straight legs'};
+  }
+  const corner = points[k];
+  const la = distance(corner, first);
+  const lb = distance(corner, last);
+  if (Math.min(la, lb) / Math.max(la, lb) < options.minLegRatio) {
+    return {reason: 'one leg much shorter than the other'};
+  }
+  const cos =
+    ((first.x - corner.x) * (last.x - corner.x) +
+      (first.y - corner.y) * (last.y - corner.y)) /
+    (la * lb);
+  const angle = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+  if (angle < options.minAngle || angle > options.maxAngle) {
+    return {reason: `corner angle ${Math.round(angle)}°`};
+  }
+  if (checkLayout) {
+    if (Math.max(la, lb) > options.maxLeg) {
+      return {reason: `legs too long (${Math.round(Math.max(la, lb))} px)`};
+    }
+    // Which end is up the vertical leg, which is along the horizontal one.
+    const [up, side] =
+      axisAngle(corner, first) > axisAngle(corner, last)
+        ? [first, last]
+        : [last, first];
+    const tol = options.axisTolerance;
+    if (axisAngle(corner, up) < 90 - tol || axisAngle(corner, side) > tol) {
+      return {reason: 'legs not vertical and horizontal'};
+    }
+    if (up.y >= corner.y || side.x >= corner.x) {
+      return {reason: 'not a reverse L (corner must be bottom right)'};
+    }
+  }
+  return {box: boundingBox(points)};
 }
 
 export interface WritingLineOptions {

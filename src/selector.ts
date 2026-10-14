@@ -3,8 +3,8 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin ✕ to erase: a small ✕ (two strokes) in the margin, level with a
- *   line of writing, erases that line and the ✕.
+ * - Margin ┘ to erase: a small reverse L (one stroke) in the margin, level
+ *   with a line of writing, erases that line and the mark.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -15,7 +15,7 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   findClosedLoop,
-  checkCrossMark,
+  checkCornerMark,
   findWritingLine,
   fractionInside,
   growPolygon,
@@ -99,21 +99,16 @@ interface Context {
   trace: (line: string) => void;
 }
 
-/** The ink stroke before this one, as delivered on pen-up. */
-export interface PreviousStroke {
-  points: Pt[];
-  /** When it was received, in ms (Date.now()). */
-  at: number;
-}
-
 export interface HandleOptions {
   gestures?: Gestures;
-  /** The previous ink stroke, for two-stroke gestures (the margin ✕). */
-  previous?: PreviousStroke | null;
-  /** Current time in ms; defaults to Date.now(). */
-  now?: number;
-  /** Receives this stroke's pen-up points, to pass back as `previous`. */
-  remember?: (points: Pt[]) => void;
+  /**
+   * Whether pen-up copies of strokes are known to be in page coordinates
+   * (learnt from earlier gestures). When true, the margin mark's orientation
+   * is checked before anything is read from (or saved to) the page.
+   */
+  penUpIsPage?: boolean;
+  /** Receives what was learnt about the pen-up coordinates. */
+  learnPenUpIsPage?: (same: boolean) => void;
   /** Checked right before the page is modified. */
   isCancelled?: () => boolean;
   /** Receives one line per decision, shown on the plugin screen. */
@@ -127,7 +122,6 @@ export async function handlePenUp(
   options: HandleOptions = {},
 ): Promise<Outcome> {
   const gestures = options.gestures ?? {loopSelect: true, marginErase: true};
-  const now = options.now ?? Date.now();
   const isCancelled = options.isCancelled ?? (() => false);
   const trace = options.trace ?? (() => {});
 
@@ -145,39 +139,30 @@ export async function handlePenUp(
   }
 
   const points = await gesture.outline();
-  options.remember?.(points);
   trace(`stroke: pen ${gesture.penType}, ${points.length} points`);
   const polygon = gestures.loopSelect
     ? findClosedLoop(points, config.loop)
     : null;
-  // Shape only, on the pen-up copies: nothing is read from (or saved to) the
-  // page unless this stroke and the previous one form a ✕.
-  // Strokes drawn in quick succession (the two halves of a ✕) can arrive in
-  // one pen-up event (seen on device): pair the last two of the event, else
-  // this stroke with the one from the previous event.
-  const previous: PreviousStroke | null | undefined =
-    ink.length >= 2
-      ? {points: await ink[ink.length - 2].outline(), at: now}
-      : options.previous;
+  // On the pen-up copy, so nothing is read from (or saved to) the page for
+  // ordinary writing. Its orientation is only checked once the pen-up copy
+  // is known to be in page coordinates; otherwise on the page copy below.
   let isMark = false;
   if (!polygon && gestures.marginErase) {
-    if (!previous) {
-      trace('✕ check: no previous stroke');
-    } else if (now - previous.at > config.markMaxDelayMs) {
-      trace(`✕ check: previous stroke ${now - previous.at} ms ago`);
+    const mark = checkCornerMark(
+      points,
+      config.corner,
+      options.penUpIsPage === true,
+    );
+    if ('reason' in mark) {
+      trace(`┘ check: ${mark.reason}`);
     } else {
-      const mark = checkCrossMark(previous.points, points, config.mark, false);
-      if ('reason' in mark) {
-        trace(`✕ check: ${mark.reason}`);
-      } else {
-        isMark = true;
-      }
+      isMark = true;
     }
   }
   if (!polygon && !isMark) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: ✕ mark');
+  trace(polygon ? 'shape: closed loop' : 'shape: ┘ mark');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -206,6 +191,7 @@ export async function handlePenUp(
   // The pen-up copy and the page copy of a stroke are not guaranteed to use
   // the same coordinates, so work from the page copy, like everything else.
   const stored = await stroke.outline();
+  options.learnPenUpIsPage?.(sameStroke(points, stored));
   trace(
     `gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}, ` +
       `${stored.length} points; first point pen-up ${fmt(points[0])}, ` +
@@ -224,32 +210,26 @@ export async function handlePenUp(
     return selectInLoop(ctx, pagePolygon);
   }
 
-  // The ✕'s first stroke: the newest other stroke with its point count.
-  const first = await findStoredStroke(
-    others,
-    null,
-    previous!.points.length,
-    trace,
-  );
-  if (!first) {
-    return {kind: 'failed', reason: 'first stroke of the ✕ not found'};
-  }
-  const firstPoints = await first.outline();
-  const checked = checkCrossMark(firstPoints, stored, config.mark);
+  const checked = checkCornerMark(stored, config.corner);
   if ('reason' in checked) {
-    return {kind: 'ignored', reason: `✕ on the page: ${checked.reason}`};
+    return {kind: 'ignored', reason: `┘ on the page: ${checked.reason}`};
   }
   const mark = checked.box;
   trace(
-    `✕ mark: #${first.numInPage} + #${stroke.numInPage}, ` +
-      `${Math.round(mark.right - mark.left)}×${Math.round(
-        mark.bottom - mark.top,
-      )} px`,
+    `┘ mark: ${Math.round(mark.right - mark.left)}×${Math.round(
+      mark.bottom - mark.top,
+    )} px`,
   );
-  return eraseNextToMark(
-    {...ctx, others: others.filter(e => e !== first)},
-    first,
-    mark,
+  return eraseNextToMark(ctx, mark);
+}
+
+/** Are two copies of a stroke the same points (same coordinates)? */
+function sameStroke(a: Pt[], b: Pt[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (p, i) => Math.abs(p.x - b[i].x) <= 2 && Math.abs(p.y - b[i].y) <= 2,
+    )
   );
 }
 
@@ -302,14 +282,10 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
 }
 
 /**
- * Erase the line of writing to the right of a margin ✕, the strokes touching
- * it (a "t" bar, a descender), and the ✕.
+ * Erase the line of writing to the right of a margin mark, the strokes
+ * touching it (a "t" bar, a descender), and the mark.
  */
-async function eraseNextToMark(
-  ctx: Context,
-  first: PageElement,
-  mark: Box,
-): Promise<Outcome> {
+async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
   const strokes: {element: PageElement; outline: Pt[]; box: Box}[] = [];
   for (const element of ctx.others) {
@@ -351,7 +327,7 @@ async function eraseNextToMark(
   if (blocked) {
     return blocked;
   }
-  if (!(await deleteVerified(ctx, [...erased, first, stroke]))) {
+  if (!(await deleteVerified(ctx, [...erased, stroke]))) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   host.rememberErased(path, page, stroke.layerNum, erased);

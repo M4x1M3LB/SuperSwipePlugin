@@ -1,7 +1,7 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
 import {createHost, PenTracker, type DeviceHost} from './host';
-import {handlePenUp, type Outcome, type PreviousStroke} from './selector';
+import {handlePenUp, type Outcome} from './selector';
 import {status} from './status';
 
 let host: DeviceHost | null = null;
@@ -17,8 +17,10 @@ export function startGestures(): void {
   // pause them once the plugin view has been shown), so a stroke that is
   // still busy after the time limit is abandoned when the next one arrives.
   let busy: {since: number; abandon: () => void} | null = null;
-  // The last ink stroke, for the two-stroke margin ✕.
-  let previous: PreviousStroke | null = null;
+  // Whether pen-up strokes come in page coordinates: learnt from the first
+  // gesture whose page copy is read, then used to check the margin mark's
+  // orientation up front.
+  let penUpIsPage: boolean | undefined;
 
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
@@ -54,14 +56,11 @@ export function startGestures(): void {
       device.setTrace(trace);
 
       const elements = device.wrap(msg as Element[]);
-      const before = previous;
-      const now = Date.now();
       handlePenUp(elements, device, DEFAULT_CONFIG, {
         gestures,
-        previous: before,
-        now,
-        remember: points => {
-          previous = {points, at: now};
+        penUpIsPage,
+        learnPenUpIsPage: same => {
+          penUpIsPage = same;
         },
         isCancelled: () => abandoned,
         trace,
@@ -75,10 +74,6 @@ export function startGestures(): void {
         .then(outcome => {
           if (busy !== current) {
             return; // abandoned; a newer stroke owns the host now
-          }
-          if (outcome.kind !== 'ignored') {
-            // Its strokes are gone or selected: never pair them again.
-            previous = null;
           }
           status.setLast(outcome, lines);
           device.release();

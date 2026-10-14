@@ -57,12 +57,12 @@ function App(): React.JSX.Element {
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
-        lasso-select them, or a small ✕ in the left margin, level with a line of
-        writing, to erase that line.
+        lasso-select them, or a small reverse L (┘) in the left margin, level
+        with a line of writing, to erase that line.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
-      <Toggle label="Margin ✕ to erase" name="marginErase" />
+      <Toggle label="Margin ┘ to erase" name="marginErase" />
 
       <View style={styles.row}>
         <Pressable style={styles.button} onPress={restore}>

@@ -400,7 +400,7 @@ describe('handlePenUp: device quirks', () => {
   });
 });
 
-describe('handlePenUp: margin ✕ to erase', () => {
+describe('handlePenUp: margin ┘ to erase', () => {
   beforeEach(() => {
     nextNum = 1;
   });
@@ -410,33 +410,25 @@ describe('handlePenUp: margin ✕ to erase', () => {
     return [100, 140, 180, 220].map(x => el(letter(x, top)));
   }
 
-  /** The two strokes of a 40 px ✕ centred on (60, 520), in the margin. */
-  const down = straight({x: 40, y: 500}, {x: 80, y: 540}, 12);
-  const up = straight({x: 40, y: 540}, {x: 80, y: 500}, 12);
+  /** A 40 px reverse L in the margin, level with the row at y=500. */
+  const markPoints = [
+    ...straight({x: 80, y: 500}, {x: 80, y: 540}, 10),
+    ...straight({x: 80, y: 540}, {x: 40, y: 540}, 10).slice(1),
+  ];
 
-  /** Draw the ✕: the second stroke arrives `delay` ms after the first. */
-  function cross(
-    host: ReturnType<typeof fakeHost>,
-    second: PageElement,
-    delay = 500,
-  ) {
-    return handlePenUp([second], host, DEFAULT_CONFIG, {
-      previous: {points: down, at: 1000},
-      now: 1000 + delay,
-    });
-  }
-
-  it('erases the line of writing next to the ✕, and the ✕', async () => {
+  it('erases the line of writing next to the ┘, and the ┘', async () => {
     const above = row(420);
     const letters = row(500);
     const below = row(580);
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([...above, ...letters, ...below, first, second]);
+    const mark = el(markPoints);
+    const host = fakeHost([...above, ...letters, ...below, mark]);
 
-    expect(await cross(host, second)).toEqual({kind: 'erased', count: 4});
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 4,
+    });
     // Newest first, so no removal shifts the numbers of the others.
-    expect(host.deleted).toEqual([[14, 13, 8, 7, 6, 5]]);
+    expect(host.deleted).toEqual([[13, 8, 7, 6, 5]]);
     expect(await host.getPageElements('', 3)).toEqual([...above, ...below]);
     expect(host.remembered).toEqual([letters]);
   });
@@ -448,116 +440,110 @@ describe('handlePenUp: margin ✕ to erase', () => {
       {x: 151, y: 489},
     ]);
     const farWord = el(word(600, 512));
-    // A descender reaching down from the last letter (centre below the band).
     const descender = el(straight({x: 245, y: 541}, {x: 242, y: 600}, 6));
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([...letters, dot, farWord, descender, first, second]);
+    const mark = el(markPoints);
+    const host = fakeHost([...letters, dot, farWord, descender, mark]);
 
-    expect(await cross(host, second)).toEqual({kind: 'erased', count: 7});
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 7,
+    });
     expect(await host.getPageElements('', 3)).toEqual([]);
   });
 
-  it('leaves a written "x" alone: writing on its left', async () => {
-    const before = el(word(-60 + 60, 515, 25)); // x 0..25, left of the ✕
-    const letters = row(500);
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([before, ...letters, first, second]);
+  it('leaves a written "L" alone (checked on the page copy)', async () => {
+    const letterL = el([
+      ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10),
+      ...straight({x: 40, y: 540}, {x: 70, y: 540}, 10).slice(1),
+    ]);
+    const host = fakeHost([...row(500), letterL]);
 
-    expect(await cross(host, second)).toEqual({
+    expect(await handlePenUp([letterL], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: '┘ on the page: not a reverse L (corner must be bottom right)',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('does not read the page for an "L" once pen-up copies are known to be in page coordinates', async () => {
+    const letterL = el([
+      ...straight({x: 40, y: 500}, {x: 40, y: 540}, 10),
+      ...straight({x: 40, y: 540}, {x: 70, y: 540}, 10).slice(1),
+    ]);
+    const host = fakeHost([...row(500), letterL]);
+    const getPageElements = jest.spyOn(host, 'getPageElements');
+
+    expect(
+      await handlePenUp([letterL], host, DEFAULT_CONFIG, {penUpIsPage: true}),
+    ).toEqual({kind: 'ignored', reason: 'not a gesture'});
+    expect(getPageElements).not.toHaveBeenCalled();
+  });
+
+  it('learns whether pen-up copies are in page coordinates', async () => {
+    const learn = jest.fn();
+    const mark = el(markPoints);
+    await handlePenUp([mark], fakeHost([...row(500), mark]), DEFAULT_CONFIG, {
+      learnPenUpIsPage: learn,
+    });
+    expect(learn).toHaveBeenLastCalledWith(true);
+
+    const rotated = el(
+      markPoints.map(p => ({x: 9000 - p.y * 10, y: p.x * 10})),
+      {
+        uuid: 'pen-up',
+        numInPage: 0,
+      },
+    );
+    const stored = el(markPoints);
+    await handlePenUp(
+      [rotated],
+      fakeHost([...row(500), stored]),
+      DEFAULT_CONFIG,
+      {
+        learnPenUpIsPage: learn,
+      },
+    );
+    expect(learn).toHaveBeenLastCalledWith(false);
+  });
+
+  it('leaves a ┘ with writing on its left alone', async () => {
+    const before = el(word(0, 515, 25));
+    const mark = el(markPoints);
+    const host = fakeHost([before, ...row(500), mark]);
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
       reason: 'writing on the left of the mark',
     });
     expect(host.deleted).toEqual([]);
   });
 
-  it('leaves a ✕ with nothing next to it as ink', async () => {
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([...row(700), first, second]);
+  it('leaves a ┘ with nothing next to it as ink', async () => {
+    const mark = el(markPoints);
+    const host = fakeHost([...row(700), mark]);
 
-    expect(await cross(host, second)).toEqual({
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
       reason: 'no writing next to the mark',
     });
   });
 
-  it('says in the trace why a stroke pair is not a ✕', async () => {
-    const first = el(down);
-    const second = el(straight({x: 40, y: 505}, {x: 80, y: 535}, 12));
-    const host = fakeHost([...row(500), first, second]);
+  it('says in the trace why a stroke is not a ┘', async () => {
+    const stroke = el(word(100, 100, 200));
     const lines: string[] = [];
-
-    await handlePenUp([second], host, DEFAULT_CONFIG, {
-      previous: {points: down, at: 0},
-      now: 100,
+    await handlePenUp([stroke], fakeHost([stroke]), DEFAULT_CONFIG, {
       trace: l => lines.push(l),
     });
-    expect(lines.join('\n')).toContain('✕ check: strokes too parallel');
-  });
-
-  it('recognises a ✕ whose two strokes arrive in one pen-up event', async () => {
-    // As seen on device: the ✕'s halves come together, and the previous
-    // event's stroke is 28 s old.
-    const letters = row(500);
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([...letters, first, second]);
-
-    expect(
-      await handlePenUp([first, second], host, DEFAULT_CONFIG, {
-        previous: {points: word(600, 900), at: 0},
-        now: 28374,
-      }),
-    ).toEqual({kind: 'erased', count: 4});
-    expect(await host.getPageElements('', 3)).toEqual([]);
-  });
-
-  it('needs both strokes within 2 seconds', async () => {
-    const first = el(down);
-    const second = el(up);
-    const host = fakeHost([...row(500), first, second]);
-
-    expect(await cross(host, second, 2500)).toEqual({
-      kind: 'ignored',
-      reason: 'not a gesture',
-    });
-  });
-
-  it('does not touch the page for a lone short stroke', async () => {
-    const stroke = el(up);
-    const host = fakeHost([...row(500), stroke]);
-    const getPageElements = jest.spyOn(host, 'getPageElements');
-
-    expect(await handlePenUp([stroke], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'ignored',
-      reason: 'not a gesture',
-    });
-    expect(getPageElements).not.toHaveBeenCalled();
-  });
-
-  it('remembers each stroke for the next one', async () => {
-    const stroke = el(up);
-    const host = fakeHost([stroke]);
-    const remember = jest.fn();
-
-    await handlePenUp([stroke], host, DEFAULT_CONFIG, {remember});
-    expect(remember).toHaveBeenCalledWith(up);
+    expect(lines.join('\n')).toContain('┘ check:');
   });
 
   it('respects the per-gesture switches', async () => {
-    const first = el(down);
-    const second = el(up);
+    const mark = el(markPoints);
     const loop = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([...row(), first, second, loop]);
-    const off = {
-      gestures: {loopSelect: false, marginErase: false},
-      previous: {points: down, at: 0},
-      now: 100,
-    };
+    const host = fakeHost([...row(), mark, loop]);
+    const off = {gestures: {loopSelect: false, marginErase: false}};
 
-    for (const g of [second, loop]) {
+    for (const g of [mark, loop]) {
       expect(await handlePenUp([g], host, DEFAULT_CONFIG, off)).toEqual({
         kind: 'ignored',
         reason: 'not a gesture',

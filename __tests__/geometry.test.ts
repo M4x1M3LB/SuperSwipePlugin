@@ -1,8 +1,8 @@
 import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
-  checkCrossMark,
-  findCrossMark,
+  netTurning,
+  checkCornerMark,
   findWritingLine,
   strokesTouch,
   fractionInside,
@@ -59,6 +59,24 @@ describe('findClosedLoop', () => {
     expect(
       findClosedLoop(open, {...DEFAULT_LOOP_OPTIONS, minSpanRatio: 0}),
     ).toBeNull();
+  });
+
+  it('does not take a reverse L or a "7" for a loop', () => {
+    // Small enough that the ends are within the closing distance.
+    const corner = [
+      ...line({x: 80, y: 500}, {x: 80, y: 540}, 10),
+      ...line({x: 80, y: 540}, {x: 40, y: 540}, 10),
+    ];
+    expect(findClosedLoop(corner)).toBeNull();
+    expect(netTurning(corner)).toBeCloseTo(90, -1);
+  });
+
+  it('measures how far a loop turns', () => {
+    // Sampled paths miss the final turn back to the start: a bit under 360°.
+    expect(netTurning(ellipse(500, 500, 200, 120))).toBeGreaterThan(320);
+    const threeQuarters = netTurning(ellipse(500, 500, 200, 120, 0.75));
+    expect(threeQuarters).toBeGreaterThan(240);
+    expect(threeQuarters).toBeLessThan(290);
   });
 
   it('rejects an open arc', () => {
@@ -140,92 +158,112 @@ describe('polygon helpers', () => {
   });
 });
 
-/** One stroke of a ✕, from `a` to `b`, with a little hand wobble. */
-function bar(a: Pt, b: Pt, n = 12): Pt[] {
-  return Array.from({length: n + 1}, (_, i) => ({
-    x: a.x + ((b.x - a.x) * i) / n + (i % 2 ? 0.8 : -0.8),
-    y: a.y + ((b.y - a.y) * i) / n,
-  }));
+/** A polyline through `corners`, `n` points per segment, slight wobble. */
+function path(corners: Pt[], n = 10): Pt[] {
+  const pts: Pt[] = [corners[0]];
+  for (let c = 1; c < corners.length; c++) {
+    const [a, b] = [corners[c - 1], corners[c]];
+    for (let i = 1; i <= n; i++) {
+      pts.push({
+        x: a.x + ((b.x - a.x) * i) / n + (i % 2 ? 0.7 : -0.7),
+        y: a.y + ((b.y - a.y) * i) / n,
+      });
+    }
+  }
+  return pts;
 }
 
-describe('findCrossMark', () => {
-  // A 40 px ✕ centred on (60, 520).
-  const down = bar({x: 40, y: 500}, {x: 80, y: 540});
-  const up = bar({x: 40, y: 540}, {x: 80, y: 500});
+describe('checkCornerMark', () => {
+  // A 40 px reverse L: down from (80, 500) to the corner (80, 540), then
+  // left to (40, 540).
+  const mark = path([
+    {x: 80, y: 500},
+    {x: 80, y: 540},
+    {x: 40, y: 540},
+  ]);
 
-  it('recognises a ✕ and returns its box', () => {
-    expect(findCrossMark(down, up)).toEqual({
-      left: 39.2,
-      top: 500,
-      right: 79.2,
-      bottom: 540,
+  it('recognises a reverse L and returns its box', () => {
+    expect(checkCornerMark(mark)).toEqual({
+      box: {left: 39.3, top: 500, right: 80.7, bottom: 540},
     });
   });
 
-  it('recognises a "+" too (any two strokes crossing at a clear angle)', () => {
-    const h = bar({x: 40, y: 520}, {x: 80, y: 520});
-    const v = bar({x: 60, y: 500}, {x: 60, y: 540});
-    expect(findCrossMark(h, v)).not.toBeNull();
+  it('recognises it drawn the other way (right, then up)', () => {
+    expect(checkCornerMark([...mark].reverse())).toHaveProperty('box');
   });
 
-  it('rejects strokes that meet at their ends (a "v", an "L")', () => {
-    const v1 = bar({x: 40, y: 500}, {x: 60, y: 540});
-    const v2 = bar({x: 60, y: 540}, {x: 80, y: 500});
-    expect(findCrossMark(v1, v2)).toBeNull();
+  it('accepts a slightly tilted, uneven one', () => {
+    const tilted = path([
+      {x: 85, y: 495},
+      {x: 78, y: 548},
+      {x: 50, y: 543},
+    ]);
+    expect(checkCornerMark(tilted)).toHaveProperty('box');
   });
 
-  it('rejects strokes that do not cross, or nearly parallel ones', () => {
+  it('rejects a written "L" and a "7" (other corners)', () => {
+    const letterL = path([
+      {x: 40, y: 500},
+      {x: 40, y: 540},
+      {x: 70, y: 540},
+    ]);
+    expect(checkCornerMark(letterL)).toEqual({
+      reason: 'not a reverse L (corner must be bottom right)',
+    });
+    const seven = path([
+      {x: 40, y: 500},
+      {x: 80, y: 500},
+      {x: 60, y: 540},
+    ]);
+    expect(checkCornerMark(seven)).toHaveProperty('reason');
+  });
+
+  it('rejects a straight line, a narrow "v" and a curve', () => {
     expect(
-      findCrossMark(down, bar({x: 140, y: 540}, {x: 180, y: 500})),
-    ).toBeNull();
+      checkCornerMark(
+        path([
+          {x: 40, y: 500},
+          {x: 120, y: 500},
+        ]),
+      ),
+    ).toHaveProperty('reason');
     expect(
-      findCrossMark(down, bar({x: 42, y: 498}, {x: 78, y: 542})),
-    ).toBeNull();
+      checkCornerMark(
+        path([
+          {x: 40, y: 500},
+          {x: 50, y: 540},
+          {x: 60, y: 500},
+        ]),
+      ),
+    ).toMatchObject({reason: expect.stringContaining('corner angle')});
+    expect(checkCornerMark(ellipse(60, 520, 20, 20, 0.5, 20))).toHaveProperty(
+      'reason',
+    );
   });
 
-  it('rejects curved strokes, and strokes too long or too unequal', () => {
-    expect(findCrossMark(ellipse(60, 520, 20, 20, 0.5, 12), up)).toBeNull();
-    const long = bar({x: 0, y: 300}, {x: 400, y: 700});
-    const longUp = bar({x: 0, y: 700}, {x: 400, y: 300});
-    expect(findCrossMark(long, longUp)).toBeNull();
-    const tiny = bar({x: 55, y: 525}, {x: 65, y: 515});
-    expect(findCrossMark(long, tiny)).toBeNull();
-  });
-
-  it('says why two strokes are not a ✕', () => {
-    const v1 = bar({x: 40, y: 500}, {x: 60, y: 540});
-    const v2 = bar({x: 60, y: 540}, {x: 80, y: 500});
-    expect(checkCrossMark(v1, v2)).toEqual({
-      reason: 'strokes do not cross in their middles (at 100 % and 0 %)',
+  it('rejects legs that are too long or too unequal', () => {
+    const big = path([
+      {x: 400, y: 100},
+      {x: 400, y: 500},
+      {x: 100, y: 500},
+    ]);
+    expect(checkCornerMark(big)).toMatchObject({
+      reason: expect.stringContaining('too long'),
     });
-    expect(checkCrossMark(ellipse(60, 520, 20, 20, 0.5, 12), up)).toEqual({
-      reason: 'first stroke not straight or too short',
-    });
-    const flat = bar({x: 40, y: 515}, {x: 80, y: 525});
-    expect(checkCrossMark(down, flat)).toMatchObject({
-      reason: expect.stringContaining('too parallel'),
+    const lopsided = path([
+      {x: 80, y: 440},
+      {x: 80, y: 540},
+      {x: 60, y: 540},
+    ]);
+    expect(checkCornerMark(lopsided)).toEqual({
+      reason: 'one leg much shorter than the other',
     });
   });
 
-  it('accepts a quick, slightly curved ✕ crossing off-centre', () => {
-    // Bowed by 5 px, crossing at about a third of each stroke.
-    const bowed = (a: Pt, b: Pt) =>
-      Array.from({length: 13}, (_, i) => ({
-        x: a.x + ((b.x - a.x) * i) / 12 + 5 * Math.sin((Math.PI * i) / 12),
-        y: a.y + ((b.y - a.y) * i) / 12,
-      }));
-    const one = bowed({x: 40, y: 500}, {x: 90, y: 550});
-    const two = bowed({x: 40, y: 530}, {x: 90, y: 480});
-    expect(findCrossMark(one, two)).not.toBeNull();
-  });
-
-  it('checks only the shape when asked (any scale or rotation)', () => {
-    const scale = (pts: Pt[]) =>
-      pts.map(p => ({x: 9000 - p.y * 10, y: p.x * 10}));
-    expect(
-      findCrossMark(scale(down), scale(up), undefined, false),
-    ).not.toBeNull();
-    expect(findCrossMark(scale(down), scale(up))).toBeNull(); // too big as px
+  it('checks only the shape when the layout is unknown (any rotation)', () => {
+    const rotated = mark.map(p => ({x: 9000 - p.y * 10, y: p.x * 10}));
+    expect(checkCornerMark(rotated, undefined, false)).toHaveProperty('box');
+    expect(checkCornerMark(rotated)).toHaveProperty('reason');
   });
 });
 
