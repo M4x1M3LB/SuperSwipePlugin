@@ -49,6 +49,8 @@ const FILE_PERMISSIONS = [
 ];
 
 const TOOL_PEN = 2;
+/** setLassoBoxState: remove the lasso box, keeping the elements. */
+const LASSO_REMOVE = 2;
 const ACTION_DOWN = 0;
 const ACTION_UP = 1;
 const ACTION_CANCEL = 3;
@@ -298,6 +300,15 @@ export function createHost(pen: PenTracker): DeviceHost {
       );
     },
 
+    async getLastElement() {
+      const last = await call<Element>(
+        'getLastElement',
+        () => PluginFileAPI.getLastElement(),
+        trace,
+      );
+      return last ? wrap([last])[0] : null;
+    },
+
     async getPageElements(path, page) {
       // getElements reads the note file: save first so it contains the
       // stroke that was just drawn.
@@ -370,12 +381,46 @@ export function createHost(pen: PenTracker): DeviceHost {
       return ok === true;
     },
 
-    async refreshPage() {
+    async getLassoElements() {
+      const elements = await call<Element[]>(
+        'getLassoElements',
+        () => PluginCommAPI.getLassoElements(),
+        trace,
+      );
+      return wrap(elements ?? []);
+    },
+
+    async deleteLassoElements() {
+      const ok = await call<boolean>(
+        'deleteLassoElements',
+        () => PluginCommAPI.deleteLassoElements(),
+        trace,
+      );
+      return ok === true;
+    },
+
+    async clearLasso() {
       await call(
+        'setLassoBoxState',
+        () => PluginCommAPI.setLassoBoxState(LASSO_REMOVE),
+        trace,
+      );
+    },
+
+    async refreshPage() {
+      // Reloading a note whose save failed would bring back strokes deleted
+      // since the last successful save, so only reload after a good save.
+      // Writing in the meantime would be lost too: wait for the pen.
+      await pen.waitForUp(5000);
+      const saved = await call<unknown>(
         'saveCurrentNote',
         () => PluginNoteAPI.saveCurrentNote(),
         trace,
       );
+      if (saved === null || saved === false) {
+        trace('not reloaded: save failed');
+        return;
+      }
       await call('reloadFile', () => PluginCommAPI.reloadFile(), trace);
     },
 

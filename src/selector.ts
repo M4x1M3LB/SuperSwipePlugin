@@ -3,8 +3,12 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Line to erase: a straight line that cuts through enough strokes is
- *   removed together with every stroke it cut through.
+ * - Scribble to erase: a back-and-forth scribble over words erases the
+ *   scribble and every stroke it went over (and the strokes touching those).
+ *
+ * Speed matters: everything runs on the page as the host holds it in memory
+ * (last element, lasso), without saving or re-reading the note file. The
+ * slower file-based path is only a fallback.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -15,15 +19,13 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   findClosedLoop,
-  findStraightLine,
+  findScribble,
   fractionInside,
-  lineCutsStroke,
   padAndClamp,
   strokesTouch,
   unionBoxes,
   type Box,
   type Pt,
-  type Segment,
 } from './geometry';
 
 export interface PageElement {
@@ -46,15 +48,25 @@ export interface Host {
     path: string,
     page: number,
   ): Promise<{width: number; height: number} | null>;
+  /** The newest element of the current page, as held in memory. */
+  getLastElement(): Promise<PageElement | null>;
   /**
-   * All elements on a page. Implementations must make sure the page read
-   * includes the stroke that was just drawn (the SDK reads the saved file).
+   * All elements on a page, read from the note file (saved first). Slow:
+   * only used when the in-memory lookups fail.
    */
   getPageElements(path: string, page: number): Promise<PageElement[]>;
   /** Make sure FILE:READ and FILE:WRITE are granted, asking if needed. */
   ensureFileAccess(): Promise<boolean>;
   /** Resolve once the pen is off the screen, or after `maxWaitMs`. */
   waitForPenUp(maxWaitMs: number): Promise<void>;
+  /** Lasso-select the elements in a rectangle (page pixels). */
+  lassoRect(rect: Box): Promise<boolean>;
+  getLassoElements(): Promise<PageElement[]>;
+  /** Delete the lasso-selected elements (keeps the undo history). */
+  deleteLassoElements(): Promise<boolean>;
+  /** Remove the lasso selection, leaving the elements alone. */
+  clearLasso(): Promise<void>;
+  /** Delete by number (clears the page's undo history). */
   deleteElements(
     numsInPage: number[],
     page: number,
@@ -67,7 +79,6 @@ export interface Host {
     layer: number,
     elements: PageElement[],
   ): void;
-  lassoRect(rect: Box): Promise<boolean>;
   /** Force the host to redraw the page (used when no lasso was created). */
   refreshPage(): Promise<void>;
   /** Free native element caches (except remembered erased elements). */
@@ -76,7 +87,7 @@ export interface Host {
 
 export interface Gestures {
   loopSelect: boolean;
-  lineErase: boolean;
+  scribbleErase: boolean;
 }
 
 export type Outcome =
@@ -93,10 +104,11 @@ interface Context {
   config: SelectorConfig;
   path: string;
   page: number;
+  size: {width: number; height: number};
   /** The gesture stroke, as stored on the page. */
   stroke: PageElement;
-  /** Other elements on the same page and layer. */
-  others: PageElement[];
+  /** Its points, in page pixels. */
+  points: Pt[];
   isCancelled: () => boolean;
   trace: (line: string) => void;
 }
@@ -115,7 +127,7 @@ export async function handlePenUp(
   config: SelectorConfig,
   options: HandleOptions = {},
 ): Promise<Outcome> {
-  const gestures = options.gestures ?? {loopSelect: true, lineErase: true};
+  const gestures = options.gestures ?? {loopSelect: true, scribbleErase: true};
   const isCancelled = options.isCancelled ?? (() => false);
   const trace = options.trace ?? (() => {});
 
@@ -133,19 +145,18 @@ export async function handlePenUp(
     return {kind: 'ignored', reason: 'not an ink stroke'};
   }
 
-  const points = await gesture.outline();
-  trace(`stroke: pen ${gesture.penType}, ${points.length} points`);
-  const polygon = gestures.loopSelect
-    ? findClosedLoop(points, config.loop)
-    : null;
-  const line =
-    !polygon && gestures.lineErase
-      ? findStraightLine(points, config.line)
-      : null;
-  if (!polygon && !line) {
+  const penUpPoints = await gesture.outline();
+  trace(`stroke: pen ${gesture.penType}, ${penUpPoints.length} points`);
+  const isLoop =
+    gestures.loopSelect && findClosedLoop(penUpPoints, config.loop) !== null;
+  const isScribble =
+    !isLoop &&
+    gestures.scribbleErase &&
+    findScribble(penUpPoints, config.scribble) !== null;
+  if (!isLoop && !isScribble) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: straight line');
+  trace(isLoop ? 'shape: closed loop' : 'shape: scribble');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -159,13 +170,17 @@ export async function handlePenUp(
   if (!(await host.ensureFileAccess())) {
     return {kind: 'failed', reason: 'file access not granted'};
   }
+  const size = await host.getPageSize(path, page);
+  if (!size) {
+    return {kind: 'failed', reason: 'page size unavailable'};
+  }
 
-  const elements = await host.getPageElements(path, page);
-  trace(`page elements: ${elements.length}`);
-  const stroke = await findStoredStroke(
-    elements,
+  const stroke = await findGestureStroke(
+    host,
+    path,
+    page,
     gesture,
-    points.length,
+    penUpPoints.length,
     trace,
   );
   if (!stroke) {
@@ -173,39 +188,45 @@ export async function handlePenUp(
   }
   // The pen-up copy and the page copy of a stroke are not guaranteed to use
   // the same coordinates, so work from the page copy, like everything else.
-  const stored = await stroke.outline();
+  const points = await stroke.outline();
   trace(
-    `gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}, ` +
-      `${stored.length} points; first point pen-up ${fmt(points[0])}, ` +
-      `page ${fmt(stored[0])}`,
-  );
-  const others = elements.filter(
-    e => e !== stroke && e.layerNum === stroke.layerNum,
+    `gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}; ` +
+      `first point pen-up ${fmt(penUpPoints[0])}, page ${fmt(points[0])}`,
   );
 
-  const ctx = {host, config, path, page, stroke, others, isCancelled, trace};
-  if (polygon) {
-    const pagePolygon = findClosedLoop(stored, config.loop);
-    if (!pagePolygon) {
+  const ctx: Context = {
+    host,
+    config,
+    path,
+    page,
+    size,
+    stroke,
+    points,
+    isCancelled,
+    trace,
+  };
+  if (isLoop) {
+    const polygon = findClosedLoop(points, config.loop);
+    if (!polygon) {
       return {kind: 'failed', reason: 'loop not recognised in page copy'};
     }
-    return selectInLoop(ctx, pagePolygon);
+    return selectInLoop(ctx, polygon);
   }
-  const pageLine = findStraightLine(stored, config.line);
-  if (!pageLine) {
-    return {kind: 'failed', reason: 'line not recognised in page copy'};
+  if (!findScribble(points, config.scribble)) {
+    return {kind: 'failed', reason: 'scribble not recognised in page copy'};
   }
-  return eraseAlongLine(ctx, pageLine);
-}
-
-function fmt(p: Pt | undefined): string {
-  return p ? `(${Math.round(p.x)}, ${Math.round(p.y)})` : '(none)';
+  return eraseUnderScribble(ctx);
 }
 
 async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
+  const {host, config, page, stroke} = ctx;
+  const blocked = await checkBeforeEdit(ctx);
+  if (blocked) {
+    return blocked;
+  }
+  const nearby = await gatherNear(ctx, boundingBox(polygon));
   const boxes: Box[] = [];
-  for (const element of ctx.others) {
+  for (const element of nearby) {
     const outline = await element.outline();
     if (
       outline.length > 0 &&
@@ -221,21 +242,12 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'ignored', reason: 'loop encloses nothing'};
   }
 
-  const size = await host.getPageSize(path, page);
-  if (!size) {
-    return {kind: 'failed', reason: 'page size unavailable'};
-  }
-
-  const blocked = await checkBeforeEdit(ctx);
-  if (blocked) {
-    return blocked;
-  }
-  if (!(await deleteVerified(ctx, [stroke]))) {
+  // The only way to remove one stroke while keeping what it surrounds.
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
-
   ctx.trace('loop stroke removed');
-  const rect = padAndClamp(enclosed, config.lassoPadding, size);
+  const rect = padAndClamp(enclosed, config.lassoPadding, ctx.size);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
     // Without a lasso the host does not redraw, and the deleted loop stays
@@ -246,45 +258,72 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   return {kind: 'selected', count: boxes.length, rect};
 }
 
-async function eraseAlongLine(ctx: Context, line: Segment): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
-  const strokes: {element: PageElement; outline: Pt[]}[] = [];
-  for (const element of ctx.others) {
-    if (element.type === STROKE) {
-      strokes.push({element, outline: await element.outline()});
-    }
-  }
-  const cut = strokes.filter(s =>
-    lineCutsStroke(s.outline, line, config.eraseMinCutRatio),
-  );
-  ctx.trace(`cut: ${cut.length} stroke(s)`);
-  if (cut.length < config.eraseMinCrossed) {
-    // An underline, a divider, a crossed-out letter: leave the ink alone.
-    return {kind: 'ignored', reason: `line cuts ${cut.length} strokes`};
-  }
-
-  // The rest of each word: strokes that cross or touch a cut stroke.
-  const erase = new Set(cut);
-  if (config.eraseTouching) {
-    for (const s of strokes) {
-      if (
-        !erase.has(s) &&
-        cut.some(c =>
-          strokesTouch(s.outline, c.outline, config.eraseTouchTolerance),
-        )
-      ) {
-        erase.add(s);
-      }
-    }
-    ctx.trace(`touching: ${erase.size - cut.length} more stroke(s)`);
-  }
-  const erased = [...erase].map(s => s.element);
-
+async function eraseUnderScribble(ctx: Context): Promise<Outcome> {
+  const {host, config, path, page, stroke, points} = ctx;
   const blocked = await checkBeforeEdit(ctx);
   if (blocked) {
     return blocked;
   }
-  if (!(await deleteVerified(ctx, [...erased, stroke]))) {
+  const nearby: {element: PageElement; outline: Pt[]}[] = [];
+  for (const element of await gatherNear(ctx, boundingBox(points))) {
+    if (element.type === STROKE) {
+      nearby.push({element, outline: await element.outline()});
+    }
+  }
+  const tolerance = config.eraseTouchTolerance;
+  const covered = nearby.filter(n =>
+    strokesTouch(n.outline, points, tolerance),
+  );
+  ctx.trace(`scribbled over: ${covered.length} stroke(s)`);
+  if (covered.length === 0) {
+    // Shading or hatching on empty paper: leave the ink alone.
+    return {kind: 'ignored', reason: 'scribble covers nothing'};
+  }
+
+  // The rest of each word: strokes that cross or touch a covered stroke.
+  const erase = new Set(covered);
+  if (config.eraseTouching) {
+    for (const n of nearby) {
+      if (
+        !erase.has(n) &&
+        covered.some(c => strokesTouch(n.outline, c.outline, tolerance))
+      ) {
+        erase.add(n);
+      }
+    }
+    ctx.trace(`touching: ${erase.size - covered.length} more stroke(s)`);
+  }
+  const erased = [...erase].map(n => n.element);
+  const targets = [...erased, stroke];
+
+  // Fast path: lasso exactly these strokes and delete the selection. This
+  // keeps the undo history and makes the host redraw the area.
+  const box = unionBoxes([
+    boundingBox(points),
+    ...[...erase].map(n => boundingBox(n.outline)),
+  ])!;
+  const rect = padAndClamp(box, config.lassoPadding, ctx.size);
+  if (await host.lassoRect(rect)) {
+    const selected = await host.getLassoElements();
+    if (sameElements(selected, targets)) {
+      if (await host.deleteLassoElements()) {
+        ctx.trace('deleted with lasso (undo kept)');
+        host.rememberErased(path, page, stroke.layerNum, erased);
+        return {kind: 'erased', count: erased.length};
+      }
+    } else {
+      ctx.trace(
+        `lasso would take ${selected.length} element(s), ` +
+          `not the ${targets.length} wanted: deleting by number`,
+      );
+    }
+    await host.clearLasso();
+  }
+
+  // Precise path: delete by number, newest first so removing one never
+  // shifts the numbers of the others.
+  const nums = targets.map(e => e.numInPage).sort((a, b) => b - a);
+  if (!(await host.deleteElements(nums, page, stroke.layerNum))) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   host.rememberErased(path, page, stroke.layerNum, erased);
@@ -294,45 +333,34 @@ async function eraseAlongLine(ctx: Context, line: Segment): Promise<Outcome> {
 }
 
 /**
- * Delete page elements, newest first so removing one never shifts the
- * numbers of the others, then re-read the page and delete again whatever
- * is still there (matched by point count and first point, as numbers may
- * have changed).
+ * Elements around `box` on the gesture's layer, other than the gesture
+ * itself. Uses a temporary lasso (in memory, fast); falls back to reading the
+ * page file.
  */
-async function deleteVerified(
-  ctx: Context,
-  targets: PageElement[],
-): Promise<boolean> {
-  const {host, path, page, stroke} = ctx;
-  const signature = async (e: PageElement) => {
-    const pts = await e.outline();
-    return `${pts.length}@${fmt(pts[0])}`;
-  };
-  const wanted = new Set(await Promise.all(targets.map(signature)));
-  const descending = (els: PageElement[]) =>
-    els.map(e => e.numInPage).sort((a, b) => b - a);
-
-  if (
-    !(await host.deleteElements(descending(targets), page, stroke.layerNum))
-  ) {
-    return false;
+async function gatherNear(ctx: Context, box: Box): Promise<PageElement[]> {
+  const {host, config, stroke} = ctx;
+  const area = padAndClamp(box, config.gatherMargin, ctx.size);
+  let elements: PageElement[];
+  if (await host.lassoRect(area)) {
+    elements = await host.getLassoElements();
+    await host.clearLasso();
+    ctx.trace(`nearby (lasso): ${elements.length} element(s)`);
+  } else {
+    elements = await host.getPageElements(ctx.path, ctx.page);
+    ctx.trace(`nearby (page file): ${elements.length} element(s)`);
   }
-  const after = await host.getPageElements(path, page);
-  const left: PageElement[] = [];
-  for (const e of after) {
-    if (
-      e.type === STROKE &&
+  return elements.filter(
+    e =>
       e.layerNum === stroke.layerNum &&
-      wanted.has(await signature(e))
-    ) {
-      left.push(e);
-    }
-  }
-  if (left.length === 0) {
-    return true;
-  }
-  ctx.trace(`still on page after delete: ${left.length}, deleting again`);
-  return host.deleteElements(descending(left), page, stroke.layerNum);
+      e.uuid !== stroke.uuid &&
+      e.numInPage !== stroke.numInPage,
+  );
+}
+
+function sameElements(a: PageElement[], b: PageElement[]): boolean {
+  const key = (e: PageElement) => e.numInPage;
+  const wanted = new Set(b.map(key));
+  return a.length === wanted.size && a.every(e => wanted.has(key(e)));
 }
 
 /** Last checks before the page is modified; returns why not to, if any. */
@@ -351,24 +379,47 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   return null;
 }
 
+function fmt(p: Pt | undefined): string {
+  return p ? `(${Math.round(p.x)}, ${Math.round(p.y)})` : '(none)';
+}
+
 /** How many of the newest page strokes to consider as the gesture. */
 const RECENT_STROKES = 10;
 
+function closeCount(count: number, wanted: number): boolean {
+  return Math.abs(count - wanted) <= Math.max(2, wanted * 0.05);
+}
+
 /**
- * Find the pen-up stroke in the page's element list.
+ * Find the gesture stroke as committed to the page.
  *
  * The pen-up element is not committed yet: its uuid and numInPage may differ
  * from the page copy, and its coordinates may be in another system. What
  * survives is the sample count, and the gesture is the newest stroke on the
- * page. So: match by uuid if possible, else the newest stroke with the same
- * number of points, else the newest one within 5 % of it.
+ * page. Fast path: the page's last element, from memory. Fallback: the page
+ * file, matching by uuid, else the newest stroke with the same number of
+ * points, else the newest one within 5 % of it.
  */
-async function findStoredStroke(
-  elements: PageElement[],
+async function findGestureStroke(
+  host: Host,
+  path: string,
+  page: number,
   gesture: PageElement,
   pointCount: number,
   trace: (line: string) => void,
 ): Promise<PageElement | null> {
+  const last = await host.getLastElement();
+  if (last && last.type === STROKE && last.numInPage >= 1) {
+    const count = (await last.outline()).length;
+    if (closeCount(count, pointCount)) {
+      trace('gesture stroke: last element');
+      return last;
+    }
+    trace(`last element has ${count} points, not ${pointCount}`);
+  }
+
+  const elements = await host.getPageElements(path, page);
+  trace(`page elements: ${elements.length}`);
   const byUuid = elements.find(
     e => e.uuid === gesture.uuid && e.numInPage >= 1,
   );
@@ -386,10 +437,7 @@ async function findStoredStroke(
   if (exact >= 0) {
     return recent[exact];
   }
-  const tolerance = Math.max(2, pointCount * 0.05);
-  const close = recent.findIndex(
-    (_, i) => Math.abs(counts[i] - pointCount) <= tolerance,
-  );
+  const close = recent.findIndex((_, i) => closeCount(counts[i], pointCount));
   if (close >= 0) {
     return recent[close];
   }
