@@ -29,6 +29,12 @@ export interface LoopOptions {
   /** Fraction of the stroke searched at each end for the closing point. */
   endSearchRatio: number;
   /**
+   * The closing points must leave at least this fraction of the stroke in
+   * the loop. Without it, two points partway along an open loop can look
+   * like the closing pair and leave a sliver that is then rejected.
+   */
+  minSpanRatio: number;
+  /**
    * Polygon area divided by bounding-box area. Rejects strokes that double
    * back on themselves (zig-zags, scribbles) which close but enclose nothing.
    */
@@ -38,9 +44,10 @@ export interface LoopOptions {
 export const DEFAULT_LOOP_OPTIONS: LoopOptions = {
   minPoints: 12,
   minSize: 40,
-  closeGapPx: 60,
-  closeGapRatio: 0.12,
-  endSearchRatio: 0.3,
+  closeGapPx: 100,
+  closeGapRatio: 0.2,
+  endSearchRatio: 0.35,
+  minSpanRatio: 0.6,
   minFillRatio: 0.3,
 };
 
@@ -170,7 +177,10 @@ export function findClosedLoop(
   let bestGap = Infinity;
   for (let i = 0; i < window; i++) {
     for (let j = n - window; j < n; j++) {
-      if (j - i < options.minPoints - 1) {
+      if (
+        j - i < options.minPoints - 1 ||
+        j - i < options.minSpanRatio * (n - 1)
+      ) {
         continue;
       }
       const gap = distance(points[i], points[j]);
@@ -195,6 +205,29 @@ export function findClosedLoop(
   return polygon;
 }
 
+/**
+ * Push every vertex `margin` px further from the polygon's centre: a loop
+ * drawn tight around something then still contains it.
+ */
+export function growPolygon(polygon: Pt[], margin: number): Pt[] {
+  const c = polygon.reduce(
+    (acc, p) => ({
+      x: acc.x + p.x / polygon.length,
+      y: acc.y + p.y / polygon.length,
+    }),
+    {x: 0, y: 0},
+  );
+  return polygon.map(p => {
+    const d = distance(p, c);
+    return d === 0
+      ? p
+      : {
+          x: c.x + ((p.x - c.x) * (d + margin)) / d,
+          y: c.y + ((p.y - c.y) * (d + margin)) / d,
+        };
+  });
+}
+
 /** Grow a box by `pad` px on every side, then clamp it to the page. */
 export function padAndClamp(
   box: Box,
@@ -209,65 +242,78 @@ export function padAndClamp(
   };
 }
 
-export interface ScribbleOptions {
+export interface LineOptions {
   /** Minimum number of sample points. */
   minPoints: number;
-  /** Smallest allowed width of the scribble, in its own units. */
-  minWidth: number;
-  /**
-   * Horizontal direction changes required (3 = four passes). A pass only
-   * counts when it covers at least `minPassRatio` of the scribble's width,
-   * so the small backtracks of handwriting ("e", "l", "o") do not count.
-   */
-  minReversals: number;
-  minPassRatio: number;
+  /** Minimum distance between the two ends, in px. */
+  minLength: number;
+  /** Max path length divided by the end-to-end distance. */
+  maxPathRatio: number;
+  /** Max distance of any point from the end-to-end chord, in px... */
+  maxDeviationPx: number;
+  /** ...or as a fraction of the chord length, whichever is larger. */
+  maxDeviationRatio: number;
 }
 
-export const DEFAULT_SCRIBBLE_OPTIONS: ScribbleOptions = {
-  minPoints: 10,
-  minWidth: 30,
-  minReversals: 3,
-  minPassRatio: 0.4,
+export const DEFAULT_LINE_OPTIONS: LineOptions = {
+  minPoints: 6,
+  minLength: 100,
+  maxPathRatio: 1.15,
+  maxDeviationPx: 12,
+  maxDeviationRatio: 0.05,
 };
 
-/**
- * Is the stroke a scratch-out: a back-and-forth horizontal scribble?
- * Returns its bounding box if so.
- */
-export function findScribble(
+export interface Segment {
+  a: Pt;
+  b: Pt;
+}
+
+/** Signed perpendicular distance from `p` to the infinite line through a, b. */
+function signedDistance(p: Pt, {a, b}: Segment): number {
+  const len = distance(a, b);
+  return ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
+}
+
+/** Keep only points at least `step` px from the previously kept one. */
+function thin(points: Pt[], step: number): Pt[] {
+  const kept = [points[0]];
+  for (const p of points) {
+    if (distance(kept[kept.length - 1], p) >= step) {
+      kept.push(p);
+    }
+  }
+  kept.push(points[points.length - 1]);
+  return kept;
+}
+
+/** Return the stroke's end-to-end segment if it is a straight line. */
+export function findStraightLine(
   points: Pt[],
-  options: ScribbleOptions = DEFAULT_SCRIBBLE_OPTIONS,
-): Box | null {
+  options: LineOptions = DEFAULT_LINE_OPTIONS,
+): Segment | null {
   if (points.length < options.minPoints) {
     return null;
   }
-  const box = boundingBox(points);
-  const width = box.right - box.left;
-  if (width < options.minWidth) {
+  const line = {a: points[0], b: points[points.length - 1]};
+  const chord = distance(line.a, line.b);
+  if (chord < options.minLength) {
     return null;
   }
-  const minPass = options.minPassRatio * width;
-  // Follow x. `far` is the furthest x reached in the current direction; a
-  // reversal counts once the pen has come back `minPass` from it.
-  const start = points[0].x;
-  let direction = 0;
-  let far = start;
-  let reversals = 0;
-  for (const {x} of points) {
-    if (direction === 0) {
-      if (Math.abs(x - start) >= minPass) {
-        direction = Math.sign(x - start);
-        far = x;
-      }
-    } else if ((x - far) * direction > 0) {
-      far = x;
-    } else if ((far - x) * direction >= minPass) {
-      reversals++;
-      direction = -direction;
-      far = x;
+  // Measure on thinned points so dense pen sampling plus hand jitter does not
+  // inflate the length of an otherwise straight stroke.
+  if (pathLength(thin(points, 10)) / chord > options.maxPathRatio) {
+    return null;
+  }
+  const maxDeviation = Math.max(
+    options.maxDeviationPx,
+    options.maxDeviationRatio * chord,
+  );
+  for (const p of points) {
+    if (Math.abs(signedDistance(p, line)) > maxDeviation) {
+      return null;
     }
   }
-  return reversals >= options.minReversals ? box : null;
+  return line;
 }
 
 function cross(o: Pt, a: Pt, b: Pt): number {
@@ -283,6 +329,35 @@ export function segmentsIntersect(p1: Pt, p2: Pt, q1: Pt, q2: Pt): boolean {
     ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
     ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
   );
+}
+
+/**
+ * Does `line` cut through the stroke? The line must cross the stroke's path,
+ * and at least `minCutRatio` of the stroke's extent (measured across the
+ * line) must lie on each side. That way an underline that only clips the
+ * tails of "g", "y" or "p" does not count.
+ */
+export function lineCutsStroke(
+  stroke: Pt[],
+  line: Segment,
+  minCutRatio: number,
+): boolean {
+  let crosses = false;
+  for (let i = 1; i < stroke.length && !crosses; i++) {
+    crosses = segmentsIntersect(stroke[i - 1], stroke[i], line.a, line.b);
+  }
+  if (!crosses) {
+    return false;
+  }
+  let above = 0;
+  let below = 0;
+  for (const p of stroke) {
+    const d = signedDistance(p, line);
+    above = Math.max(above, d);
+    below = Math.max(below, -d);
+  }
+  const extent = above + below;
+  return extent > 0 && Math.min(above, below) >= minCutRatio * extent;
 }
 
 function overlapsWithin(a: Box, b: Box, margin: number): boolean {

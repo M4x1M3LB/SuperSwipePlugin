@@ -57,11 +57,12 @@ function App(): React.JSX.Element {
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
-        lasso-select them, or scribble back and forth over words to erase them.
+        lasso-select them, or a straight line through 3 or more strokes to erase
+        them.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
-      <Toggle label="Scribble to erase" name="scribbleErase" />
+      <Toggle label="Line to erase" name="lineErase" />
 
       <View style={styles.row}>
         <Pressable style={styles.button} onPress={restore}>
@@ -85,9 +86,8 @@ function App(): React.JSX.Element {
         </View>
       )}
       <Text style={styles.note}>
-        Note: erasing normally keeps the undo history. Loop to select, and
-        erases that fall back to deleting stroke by stroke, clear it (Supernote
-        limitation): use Restore last erase for those.
+        Note: gestures clear the page's undo history (Supernote limitation). Use
+        Restore last erase to undo an erase.
       </Text>
     </View>
   );

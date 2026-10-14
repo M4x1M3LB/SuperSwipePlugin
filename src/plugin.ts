@@ -23,7 +23,7 @@ export function startGestures(): void {
       status.countPenUp();
       const gestures = status.gestures();
       if (
-        (!gestures.loopSelect && !gestures.scribbleErase) ||
+        (!gestures.loopSelect && !gestures.lineErase) ||
         !Array.isArray(msg)
       ) {
         return;
