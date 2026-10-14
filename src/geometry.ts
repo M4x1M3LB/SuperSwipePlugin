@@ -159,6 +159,68 @@ export function fractionInside(points: Pt[], polygon: Pt[]): number {
 }
 
 /**
+ * The smallest count k (0..n+1) with `k / n >= fraction`, so `count >= k`
+ * holds exactly when `count / n >= fraction` does (the division is
+ * monotonic in k): no float compared against fraction × n.
+ */
+export function minCountFor(fraction: number, n: number): number {
+  let k = Math.ceil(fraction * n);
+  if (!(k >= 0)) {
+    k = 0;
+  } else if (k > n + 1) {
+    k = n + 1;
+  }
+  while (k > 0 && (k - 1) / n >= fraction) {
+    k--;
+  }
+  while (k <= n && !(k / n >= fraction)) {
+    k++;
+  }
+  return k;
+}
+
+/**
+ * `fractionInside(points, polygon) >= fraction`, stopping as soon as the
+ * answer is known. `polygonBox` must be the polygon's bounding box.
+ */
+export function insideAtLeast(
+  points: Pt[],
+  polygon: Pt[],
+  fraction: number,
+  polygonBox: Box = boundingBox(polygon),
+): boolean {
+  const n = points.length;
+  if (n === 0) {
+    return fraction <= 0;
+  }
+  const needed = minCountFor(fraction, n);
+  if (needed === 0) {
+    return true;
+  }
+  const box = polygonBox;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    if (count + (n - i) < needed) {
+      return false;
+    }
+    const p = points[i];
+    if (
+      p.x >= box.left &&
+      p.x <= box.right &&
+      p.y >= box.top &&
+      p.y <= box.bottom &&
+      pointInPolygon(p, polygon)
+    ) {
+      count++;
+      if (count >= needed) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Decide whether a stroke is a closed loop and, if so, return the polygon it
  * encloses (with any overshoot past the closing point trimmed off).
  *
@@ -185,27 +247,7 @@ export function checkClosedLoop(
 
   const length = pathLength(points);
   const maxGap = Math.max(options.closeGapPx, options.closeGapRatio * length);
-  const window = Math.max(1, Math.floor(n * options.endSearchRatio));
-
-  let bestI = -1;
-  let bestJ = -1;
-  let bestGap = Infinity;
-  for (let i = 0; i < window; i++) {
-    for (let j = n - window; j < n; j++) {
-      if (
-        j - i < options.minPoints - 1 ||
-        j - i < options.minSpanRatio * (n - 1)
-      ) {
-        continue;
-      }
-      const gap = distance(points[i], points[j]);
-      if (gap < bestGap) {
-        bestGap = gap;
-        bestI = i;
-        bestJ = j;
-      }
-    }
-  }
+  const {i: bestI, j: bestJ, gap: bestGap} = closingPair(points, options);
   if (bestI < 0 || bestGap > maxGap) {
     return {
       reason: `ends ${Math.round(bestGap)} apart (max ${Math.round(maxGap)})`,
@@ -224,6 +266,59 @@ export function checkClosedLoop(
     return {reason: 'encloses too little area'};
   }
   return {polygon};
+}
+
+/**
+ * Squared distances this close (relatively) may order differently from
+ * `Math.hypot`; such near-ties are settled with `Math.hypot`, as before.
+ */
+const NEAR_TIE = 1e-9;
+
+/**
+ * Where a loop closes: the closest pair of points, i in the head and j in
+ * the tail (the first such pair in i, then j order on a tie), at least the
+ * loop's minimum span apart. i is -1 when no pair qualifies. `gap` is
+ * exactly `distance(points[i], points[j])`.
+ */
+export function closingPair(
+  points: Pt[],
+  options: LoopOptions = DEFAULT_LOOP_OPTIONS,
+): {i: number; j: number; gap: number} {
+  const n = points.length;
+  const window = Math.max(1, Math.floor(n * options.endSearchRatio));
+  // j - i must be at least this (both bounds are whole numbers of points).
+  const minSpan = Math.max(
+    Math.ceil(options.minPoints - 1),
+    Math.ceil(options.minSpanRatio * (n - 1)),
+  );
+  let bestI = -1;
+  let bestJ = -1;
+  let bestSq = Infinity;
+  let bestGap = Infinity;
+  for (let i = 0; i < window; i++) {
+    const pi = points[i];
+    for (let j = Math.max(n - window, i + minSpan); j < n; j++) {
+      const pj = points[j];
+      const dx = pi.x - pj.x;
+      const dy = pi.y - pj.y;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq * (1 - NEAR_TIE)) {
+        bestSq = sq;
+        bestGap = Math.hypot(dx, dy);
+        bestI = i;
+        bestJ = j;
+      } else if (sq <= bestSq * (1 + NEAR_TIE)) {
+        const gap = Math.hypot(dx, dy);
+        if (gap < bestGap) {
+          bestSq = sq;
+          bestGap = gap;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+  }
+  return {i: bestI, j: bestJ, gap: bestGap};
 }
 
 /** `checkClosedLoop`, keeping only the polygon. */
@@ -321,7 +416,8 @@ export function segmentsIntersect(p1: Pt, p2: Pt, q1: Pt, q2: Pt): boolean {
   );
 }
 
-function overlapsWithin(a: Box, b: Box, margin: number): boolean {
+/** Do the boxes overlap, or come within `margin` of each other? */
+export function overlapsWithin(a: Box, b: Box, margin: number): boolean {
   return (
     a.left - margin <= b.right &&
     b.left - margin <= a.right &&
@@ -365,13 +461,22 @@ function reaches(a: Pt[], b: Pt[], toleranceSq: number): boolean {
 /**
  * Do two strokes cross or touch? They touch when their paths come within
  * `tolerance` px of each other (handwritten strokes that meet rarely cross
- * exactly).
+ * exactly). `aBox` and `bBox`, when given, must be the bounding boxes of
+ * exactly `a` and `b` (saves computing them again).
  */
-export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
+export function strokesTouch(
+  a: Pt[],
+  b: Pt[],
+  tolerance: number,
+  aBox?: Box,
+  bBox?: Box,
+): boolean {
   if (a.length === 0 || b.length === 0) {
     return false;
   }
-  if (!overlapsWithin(boundingBox(a), boundingBox(b), tolerance)) {
+  if (
+    !overlapsWithin(aBox ?? boundingBox(a), bBox ?? boundingBox(b), tolerance)
+  ) {
     return false;
   }
   for (let i = 1; i < a.length; i++) {

@@ -28,13 +28,16 @@ import {
   findClosedLoop,
   checkWave,
   findWritingLine,
-  fractionInside,
   growPolygon,
+  insideAtLeast,
+  overlapsWithin,
   padAndClamp,
   strokesTouch,
   unionBoxes,
   type Box,
+  type LoopOptions,
   type Pt,
+  type WaveOptions,
 } from './geometry';
 
 export interface PageElement {
@@ -48,15 +51,24 @@ export interface PageElement {
   penType: number | null;
   /** Points describing where the element sits on the page. */
   outline(): Promise<Pt[]>;
+  /**
+   * How many points `outline()` has, without reading them (optional; when
+   * missing, `outline()` is read instead).
+   */
+  pointCount?(): Promise<number>;
+  /** The first point of `outline()`, without reading the rest (optional). */
+  firstPoint?(): Promise<Pt | undefined>;
+}
+
+export interface PageSize {
+  width: number;
+  height: number;
 }
 
 export interface Host {
   getCurrentFilePath(): Promise<string | null>;
   getCurrentPageNum(): Promise<number | null>;
-  getPageSize(
-    path: string,
-    page: number,
-  ): Promise<{width: number; height: number} | null>;
+  getPageSize(path: string, page: number): Promise<PageSize | null>;
   /**
    * All elements on a page. Implementations must make sure the page read
    * includes the stroke that was just drawn (the SDK reads the saved file).
@@ -90,8 +102,12 @@ export interface Host {
    * the last save (it would be lost). Returns whether it reloaded.
    */
   reloadIfQuiet(): Promise<boolean>;
-  /** Free native element caches (except remembered erased elements). */
-  release(): void;
+  /**
+   * Free the native caches of the elements read so far, except remembered
+   * erased elements and the elements with these uuids (strokes still
+   * waiting to be handled).
+   */
+  release(pendingUuids?: string[]): void;
 }
 
 export interface Gestures {
@@ -126,6 +142,8 @@ interface Context {
   isCancelled: () => boolean;
   trace: (line: string) => void;
   screenRefresh: boolean;
+  /** The page size, when already read or being read. */
+  size?: Promise<PageSize | null>;
 }
 
 export interface HandleOptions {
@@ -173,42 +191,94 @@ export async function handlePenUp(
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
   // A line or a bar: the pen-up copy may be turned a quarter, so which one
-  // is decided on the page copy.
-  let isStraight = false;
+  // is decided on the page copy. Which check it passed here, and its
+  // length in page px.
+  let straight: {kind: 'line' | 'bar'; length: number; index: number} | null =
+    null;
   const downsAtStart = host.penDownCount();
+  // Every stroke's points are read at once (newest first): each read is a
+  // round trip to the device.
+  const readsFrom = Date.now();
+  let readsDone = 0;
+  let readsDoneAt = readsFrom;
+  const reads: Promise<Pt[]>[] = new Array(ink.length);
+  for (let i = ink.length - 1; i >= 0; i--) {
+    reads[i] = ink[i].outline();
+    reads[i].then(
+      () => {
+        readsDone++;
+        readsDoneAt = Date.now();
+      },
+      () => {},
+    );
+  }
   for (let i = ink.length - 1; i >= 0 && !gesture; i--) {
     const candidate = ink[i];
-    const pts = await candidate.outline();
+    const pts = await reads[i];
     const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
     trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
+    // Its size, once. Measured in page px: a pen-up copy in the digitiser's
+    // units (EMR, larger than any page) is scaled down first.
+    const n = pts.length;
+    const box = boundingBox(pts);
+    const w = box.right - box.left;
+    const h = box.bottom - box.top;
+    const unit = penUpUnit(box, config);
+    const span = n > 0 ? Math.max(w, h) / unit : 0;
+    if (span < MIN_GESTURE_PX) {
+      // A dot, a closed letter: no page rule could pass. (Keeps a
+      // "wave check:" line, the first check, for the stroke history.)
+      trace(
+        `  wave check: too small for any gesture (~${Math.round(span)} px)`,
+      );
+      continue;
+    }
     if (gestures.marginErase) {
       const wave = checkWave(pts, config.wave, false);
-      const swapped = pts.map(p => ({x: p.y, y: p.x}));
-      if ('box' in wave || 'box' in checkWave(swapped, config.wave, false)) {
+      if (
+        'box' in wave ||
+        (swappedWaveMayPass(n, w, h, config.wave) &&
+          'box' in checkWave(swapAxes(pts), config.wave, false))
+      ) {
         [gesture, points] = [candidate, pts];
         break;
       }
       trace(`  wave check: ${wave.reason}`);
     }
     if (gestures.loopSelect) {
-      const loop = checkClosedLoop(pts, config.loop);
+      const loop = checkClosedLoop(
+        pts,
+        unit === 1 ? config.loop : loopFor(config.loop, unit),
+      );
       if ('polygon' in loop) {
         [gesture, points, polygon] = [candidate, pts, loop.polygon];
         break;
       }
-      trace(`  loop check: ${loop.reason}`);
+      trace(
+        `  loop check: ${
+          loop.reason === 'too small'
+            ? `too small on the page (~${Math.round(
+                Math.min(w, h) / unit,
+              )} px, needs ${config.loop.minSize})`
+            : loop.reason
+        }`,
+      );
+    }
+    const barOn = gestures.barSelect ?? true;
+    const lineOn = gestures.lineSelect ?? true;
+    if (!barOn && !lineOn) {
+      continue;
     }
     // Long enough, so a dash, a "t" bar or an "l" never makes us read the
-    // page. Measured in page px: a pen-up copy in the digitiser's units
-    // (EMR, larger than any page) is scaled down first, and turned back a
-    // quarter (the SDK's PointUtils: page x and y are EMR y and x).
-    const unit = penUpUnit(pts, config);
-    const upright = unit === 1 ? pts : pts.map(p => ({x: p.y, y: p.x}));
-    if (gestures.barSelect ?? true) {
+    // page. In page px, and turned back a quarter (the SDK's PointUtils:
+    // page x and y are EMR y and x).
+    const upright = unit === 1 ? pts : swapAxes(pts);
+    if (barOn) {
       const bar = checkVerticalBar(upright, config.bar);
       const length = 'box' in bar ? (bar.box.bottom - bar.box.top) / unit : 0;
       if ('box' in bar && length >= config.barMinPenUpLength) {
-        [gesture, points, isStraight] = [candidate, pts, true];
+        [gesture, points] = [candidate, pts];
+        straight = {kind: 'bar', length, index: i};
         break;
       }
       trace(
@@ -221,11 +291,12 @@ export async function handlePenUp(
         }`,
       );
     }
-    if (gestures.lineSelect ?? true) {
+    if (lineOn) {
       const line = checkStraightLine(upright, config.straightLine);
       const length = 'from' in line ? distance(line.from, line.to) / unit : 0;
       if ('from' in line && length >= config.lineMinPenUpLength) {
-        [gesture, points, isStraight] = [candidate, pts, true];
+        [gesture, points] = [candidate, pts];
+        straight = {kind: 'line', length, index: i};
         break;
       }
       trace(
@@ -239,9 +310,17 @@ export async function handlePenUp(
       );
     }
   }
+  if (ink.length > 1) {
+    trace(
+      `pen-up points: ${ink.length} strokes read together, ${readsDone} in ${
+        readsDoneAt - readsFrom
+      } ms`,
+    );
+  }
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
+  const isStraight = straight !== null;
   trace(
     polygon
       ? 'shape: closed loop'
@@ -250,21 +329,74 @@ export async function handlePenUp(
       : 'shape: wave',
   );
 
-  const path = await host.getCurrentFilePath();
+  // A bar followed by more writing is ink (a brace and its label): the
+  // page check would refuse it, so do not read the page for it.
+  const barCandidate = straight?.kind === 'bar' ? straight : null;
+  if (barCandidate && barCandidate.index < ink.length - 1) {
+    // Later ink strokes in the same event are written after the bar.
+    trace('bar: followed in the same burst (no page read)');
+    return {kind: 'ignored', reason: 'bar followed by more writing'};
+  }
+  const keptWriting = () => {
+    if (barCandidate && host.penDownCount() !== downsAtStart) {
+      trace('bar: pen down again (no page read)');
+      return true;
+    }
+    return false;
+  };
+  if (keptWriting()) {
+    return {kind: 'ignored', reason: 'kept writing after the bar'};
+  }
+
+  const [path, pageNum] = await Promise.all([
+    host.getCurrentFilePath(),
+    host.getCurrentPageNum(),
+  ]);
   if (!path || !/\.note$/i.test(path)) {
     return {kind: 'ignored', reason: 'only NOTE files are supported'};
   }
   // The pen-up element is not committed to the page yet, so its page fields
   // may be unset: ask the host which page is showing.
-  const page = (await host.getCurrentPageNum()) ?? gesture.pageNum;
+  const page = pageNum ?? gesture.pageNum;
   trace(`file: ${path.split('/').pop()}, page ${page}`);
 
   if (!(await host.ensureFileAccess())) {
     return {kind: 'failed', reason: 'file access not granted'};
   }
 
+  // A line or a bar needs the page size anyway: read it now, before the
+  // save, and refuse what is too short or too long for this page without
+  // reading the page. (Not while saving: the save writes the file.)
+  let size: Promise<PageSize | null> | undefined;
+  if (straight) {
+    const known = await readPageSize(host, path, page, trace);
+    if (known) {
+      const refused = preCheckStraight(straight, known, config);
+      if (refused) {
+        trace(
+          `pre-check on page size ${known.width}x${known.height}: ${refused} (no page read)`,
+        );
+        return {kind: 'ignored', reason: refused};
+      }
+      size = Promise.resolve(known);
+    }
+    if (keptWriting()) {
+      return {kind: 'ignored', reason: 'kept writing after the bar'};
+    }
+  }
+
+  const readFrom = Date.now();
   const elements = await host.getPageElements(path, page);
-  trace(`page elements: ${elements.length}`);
+  trace(
+    `page elements: ${elements.length} (saved and read in ${
+      Date.now() - readFrom
+    } ms)`,
+  );
+  if (polygon) {
+    // Needed once the loop is known to enclose something: read it while
+    // the strokes are read.
+    size = readPageSize(host, path, page, trace);
+  }
   const stroke = await findStoredStroke(
     elements,
     gesture.uuid,
@@ -286,7 +418,7 @@ export async function handlePenUp(
     e => e !== stroke && e.layerNum === stroke.layerNum,
   );
 
-  const ctx = {
+  const ctx: Context = {
     host,
     config,
     path,
@@ -296,6 +428,7 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
+    size,
   };
   if (isStraight) {
     const line = checkStraightLine(stored, config.straightLine);
@@ -372,11 +505,137 @@ export async function handlePenUp(
 
 /**
  * The pen-up copy's unit, in page px: 1, or the digitiser's (EMR) scale
- * when its coordinates are larger than any page can be.
+ * when its coordinates (here: its bounding box) are larger than any page
+ * can be.
  */
-function penUpUnit(points: Pt[], config: SelectorConfig): number {
-  const largest = Math.max(...points.map(p => Math.max(p.x, p.y)), 0);
-  return largest > config.maxPagePx ? config.emrPerPx : 1;
+function penUpUnit(box: Box, config: SelectorConfig): number {
+  return Math.max(box.right, box.bottom) > config.maxPagePx
+    ? config.emrPerPx
+    : 1;
+}
+
+/**
+ * Pen-up sizes are compared with the page rules with this much slack (the
+ * two copies may differ a little). Lower it if a device trace ever shows a
+ * real loop refused as "too small on the page".
+ */
+const PEN_UP_SLACK = 0.9;
+
+/**
+ * Below this size, in page px, no gesture can pass on the page: 0.9 × the
+ * smallest page rule (a wave is at least 20 px wide; a loop needs 30 px per
+ * side, a line 168 px, a bar 100 px).
+ */
+const MIN_GESTURE_PX = 18;
+
+let loopOptionsCache: {
+  base: LoopOptions;
+  unit: number;
+  options: LoopOptions;
+} | null = null;
+
+/** Loop options for a pen-up copy in `unit`s: only the size rule scales. */
+function loopFor(base: LoopOptions, unit: number): LoopOptions {
+  if (loopOptionsCache?.base !== base || loopOptionsCache.unit !== unit) {
+    loopOptionsCache = {
+      base,
+      unit,
+      options: {...base, minSize: base.minSize * unit * PEN_UP_SLACK},
+    };
+  }
+  return loopOptionsCache.options;
+}
+
+function swapAxes(points: Pt[]): Pt[] {
+  return points.map(p => ({x: p.y, y: p.x}));
+}
+
+/**
+ * Could `checkWave` pass on the copy with swapped axes? The same tests it
+ * starts with, on the swapped box (width h, height w).
+ */
+function swappedWaveMayPass(
+  n: number,
+  w: number,
+  h: number,
+  wave: WaveOptions,
+): boolean {
+  return (
+    n >= wave.minPoints &&
+    !(h < wave.minAspect * w) &&
+    !(w < wave.minFlatness * h)
+  );
+}
+
+/**
+ * A line or bar measured on the pen-up copy that the page's own rules
+ * (selectBesideLine, selectBesideBar) would refuse on a page this size;
+ * with some slack, and the page's rules taken on either side of the page.
+ * Returns the refusal, in the page check's words, or null.
+ */
+function preCheckStraight(
+  straight: {kind: 'line' | 'bar'; length: number},
+  size: PageSize,
+  config: SelectorConfig,
+): string | null {
+  const shortSide = Math.min(size.width, size.height);
+  const longSide = Math.max(size.width, size.height);
+  const length = straight.length;
+  if (straight.kind === 'line') {
+    const needed = Math.max(
+      config.lineMinPenUpLength,
+      config.lineMinWidthRatio * shortSide,
+    );
+    return length < PRE_CHECK_SHORT * needed
+      ? `line too short (${Math.round(length)} px, needs ${Math.round(needed)})`
+      : null;
+  }
+  const needed = Math.max(
+    config.barMinPx,
+    config.barMinHeightRatio * shortSide,
+  );
+  if (length < PRE_CHECK_SHORT * needed) {
+    return `bar too short (${Math.round(length)} px, needs ${Math.round(
+      needed,
+    )})`;
+  }
+  if (length > PRE_CHECK_LONG * config.barMaxHeightRatio * longSide) {
+    return 'bar too long (a page rule?)';
+  }
+  return null;
+}
+
+/** Slack of the pre-checks on the page size: 5 % either way. */
+const PRE_CHECK_SHORT = 0.95;
+const PRE_CHECK_LONG = 1.05;
+
+/** Read the page size, tracing it. */
+function readPageSize(
+  host: Host,
+  path: string,
+  page: number,
+  trace: (line: string) => void,
+): Promise<PageSize | null> {
+  const from = Date.now();
+  const read = host.getPageSize(path, page).then(size => {
+    trace(
+      size
+        ? `page size: read ${size.width}x${size.height} (${
+            Date.now() - from
+          } ms)`
+        : 'page size: unavailable',
+    );
+    return size;
+  });
+  // Started ahead for a loop, it may not be awaited if the flow stops
+  // early: never an unhandled rejection.
+  read.catch(() => {});
+  return read;
+}
+
+/** The page size: the one already read or being read, or read now. */
+function pageSizeOf(ctx: Context): Promise<PageSize | null> {
+  return ctx.size ?? readPageSize(ctx.host, ctx.path, ctx.page, ctx.trace);
 }
 
 function fmt(p: Pt | undefined): string {
@@ -384,17 +643,30 @@ function fmt(p: Pt | undefined): string {
 }
 
 async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
+  const {host, config, page, stroke} = ctx;
   // Selection is generous: the loop is grown outward a little, so strokes it
   // grazes or slightly cuts through still count.
   const area = growPolygon(polygon, config.loopMargin);
+  const areaBox = boundingBox(area);
+  // An element entirely outside the area's box has nothing inside it.
+  const skipOutside = config.minInsideFraction > 0;
   const boxes: Box[] = [];
   for (const outline of await outlinesOf(ctx.others)) {
+    if (outline.length === 0) {
+      continue;
+    }
+    const box = boundingBox(outline);
     if (
-      outline.length > 0 &&
-      fractionInside(outline, area) >= config.minInsideFraction
+      skipOutside &&
+      (box.right < areaBox.left ||
+        box.left > areaBox.right ||
+        box.bottom < areaBox.top ||
+        box.top > areaBox.bottom)
     ) {
-      boxes.push(boundingBox(outline));
+      continue;
+    }
+    if (insideAtLeast(outline, area, config.minInsideFraction, areaBox)) {
+      boxes.push(box);
     }
   }
   const enclosed = unionBoxes(boxes);
@@ -404,7 +676,7 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'ignored', reason: 'loop encloses nothing'};
   }
 
-  const size = await host.getPageSize(path, page);
+  const size = await pageSizeOf(ctx);
   if (!size) {
     return {kind: 'failed', reason: 'page size unavailable'};
   }
@@ -437,8 +709,16 @@ async function selectBesideBar(
   bar: Box,
   downsAtStart: number,
 ): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
-  const size = await host.getPageSize(path, page);
+  const {host, config, page, stroke} = ctx;
+  // The pen count only grows: once it changed, the outcome is decided.
+  const keptWriting: Outcome = {
+    kind: 'ignored',
+    reason: 'kept writing after the bar',
+  };
+  if (host.penDownCount() !== downsAtStart) {
+    return keptWriting;
+  }
+  const size = await pageSizeOf(ctx);
   if (!size) {
     return {kind: 'failed', reason: 'page size unavailable'};
   }
@@ -468,17 +748,21 @@ async function selectBesideBar(
 
   const outline = await stroke.outline();
   const outlines = await outlinesOf(ctx.others);
+  if (host.penDownCount() !== downsAtStart) {
+    return keptWriting;
+  }
+  const barBox = boundingBox(outline);
   const boxes: Box[] = [];
-  const owners: number[] = [];
   for (let i = 0; i < outlines.length; i++) {
-    if (outlines[i].length === 0) {
+    const pts = outlines[i];
+    if (pts.length === 0) {
       continue;
     }
-    if (strokesTouch(outline, outlines[i], config.eraseTouchTolerance)) {
+    const box = boundingBox(pts);
+    if (strokesTouch(outline, pts, config.eraseTouchTolerance, barBox, box)) {
       return {kind: 'ignored', reason: 'bar touches the writing'};
     }
-    boxes.push(boundingBox(outlines[i]));
-    owners.push(i);
+    boxes.push(box);
   }
   const block = findBlockBesideBar(bar, boxes, size.width, config.block);
   if ('reason' in block) {
@@ -492,7 +776,7 @@ async function selectBesideBar(
     return blocked;
   }
   if (host.penDownCount() !== downsAtStart) {
-    return {kind: 'ignored', reason: 'kept writing after the bar'};
+    return keptWriting;
   }
   if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: 'could not remove the bar'};
@@ -523,8 +807,8 @@ async function selectBesideLine(
   line: {from: Pt; to: Pt},
   keepAlive: () => void,
 ): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
-  const size = await host.getPageSize(path, page);
+  const {host, config, page, stroke} = ctx;
+  const size = await pageSizeOf(ctx);
   if (!size) {
     return {kind: 'failed', reason: 'page size unavailable'};
   }
@@ -550,10 +834,10 @@ async function selectBesideLine(
     if (pts.length === 0) {
       continue;
     }
-    if (strokesTouch(outline, pts, config.eraseTouchTolerance)) {
+    const box = boundingBox(pts);
+    if (strokesTouch(outline, pts, config.eraseTouchTolerance, lineBox, box)) {
       return {kind: 'ignored', reason: 'line crosses the writing'};
     }
-    const box = boundingBox(pts);
     // Writing just above the line, in its span: an underline (drawn
     // further below the letters than writing comes above a separator).
     // Just below it, in its span: writing under a rule. Level with it,
@@ -649,11 +933,17 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
 
   // Strokes touching the line: a "t" bar, a descender, connected letters.
   const erase = new Set(row);
+  const tolerance = config.eraseTouchTolerance;
+  const rowBox = unionBoxes(row.map(r => r.box))!;
   for (const s of strokes) {
+    if (erase.has(s) || !overlapsWithin(s.box, rowBox, tolerance)) {
+      continue;
+    }
     if (
-      !erase.has(s) &&
-      row.some(r =>
-        strokesTouch(s.outline, r.outline, config.eraseTouchTolerance),
+      row.some(
+        r =>
+          overlapsWithin(s.box, r.box, tolerance) &&
+          strokesTouch(s.outline, r.outline, tolerance, s.box, r.box),
       )
     ) {
       erase.add(s);
@@ -670,8 +960,10 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
-  host.rememberErased(path, page, stroke.layerNum, erased);
   await repaint(ctx, removed.fileClean);
+  // After the reload: recycling the previous erase's strokes never goes
+  // ahead of it.
+  host.rememberErased(path, page, stroke.layerNum, erased);
   return {kind: 'erased', count: erased.length};
 }
 
@@ -686,21 +978,44 @@ async function deleteVerified(
   targets: PageElement[],
 ): Promise<{deleted: boolean; fileClean: boolean}> {
   const {host, path, page, stroke} = ctx;
-  const signature = async (e: PageElement) => {
-    const pts = await e.outline();
-    return `${pts.length}@${fmt(pts[0])}`;
-  };
-  const wanted = new Set(await Promise.all(targets.map(signature)));
+  // Point count and first point: the targets' outlines are already read.
+  const targetOutlines = await Promise.all(targets.map(e => e.outline()));
+  const wanted = new Set(
+    targetOutlines.map(pts => `${pts.length}@${fmt(pts[0])}`),
+  );
+  const wantedCounts = new Set(targetOutlines.map(pts => pts.length));
   const descending = (els: PageElement[]) =>
     els.map(e => e.numInPage).sort((a, b) => b - a);
 
-  // Saves the page, then reads the file: what is still there.
+  // Saves the page, then reads the file: what is still there. Only the
+  // point counts are read, and the first point of strokes whose count
+  // matches a target's.
   const stillThere = async () => {
     const same = (await host.getPageElements(path, page)).filter(
       e => e.type === STROKE && e.layerNum === stroke.layerNum,
     );
-    const signatures = await Promise.all(same.map(signature));
-    return same.filter((_, i) => wanted.has(signatures[i]));
+    const counts = await Promise.all(same.map(pointCountOf));
+    let firstReads = 0;
+    const signatures = await Promise.all(
+      same.map(async (e, i) => {
+        const count = counts[i];
+        if (!wantedCounts.has(count)) {
+          return null;
+        }
+        if (count === 0) {
+          return `0@${fmt(undefined)}`;
+        }
+        firstReads++;
+        return `${count}@${fmt(await firstPointOf(e))}`;
+      }),
+    );
+    ctx.trace(
+      `verify: ${same.length} strokes sized, ${firstReads} first points read`,
+    );
+    return same.filter((_, i) => {
+      const signature = signatures[i];
+      return signature !== null && wanted.has(signature);
+    });
   };
 
   if (
@@ -739,20 +1054,39 @@ async function repaint(ctx: Context, fileClean: boolean): Promise<void> {
   );
 }
 
-/** How many element outlines to read from the device at once. */
-const READ_BATCH = 64;
+/** Most element outlines being read from the device at once. */
+const READ_POOL = 64;
 
 /**
- * The elements' outlines, read in parallel batches: each read is a call to
- * the device, and waiting for them one by one is slow on a full page.
+ * The elements' outlines, in their order. Each read is a call to the
+ * device, and waiting for them one by one is slow on a full page: up to
+ * READ_POOL are in flight, and the next starts as soon as one finishes.
  */
-async function outlinesOf(elements: PageElement[]): Promise<Pt[][]> {
-  const result: Pt[][] = [];
-  for (let i = 0; i < elements.length; i += READ_BATCH) {
-    const batch = elements.slice(i, i + READ_BATCH);
-    result.push(...(await Promise.all(batch.map(e => e.outline()))));
+export async function outlinesOf(elements: PageElement[]): Promise<Pt[][]> {
+  const result: Pt[][] = new Array(elements.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < elements.length) {
+      const i = next++;
+      result[i] = await elements[i].outline();
+    }
+  };
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < Math.min(READ_POOL, elements.length); w++) {
+    workers.push(worker());
   }
+  await Promise.all(workers);
   return result;
+}
+
+/** The element's point count, without reading its points if possible. */
+function pointCountOf(e: PageElement): Promise<number> {
+  return e.pointCount ? e.pointCount() : e.outline().then(pts => pts.length);
+}
+
+/** The element's first point, without reading the rest if possible. */
+function firstPointOf(e: PageElement): Promise<Pt | undefined> {
+  return e.firstPoint ? e.firstPoint() : e.outline().then(pts => pts[0]);
 }
 
 /** Last checks before the page is modified; returns why not to, if any. */
@@ -761,11 +1095,14 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   await ctx.host.waitForPenUp(ctx.config.penUpWaitMs);
   // The user may have turned the page or switched file while we worked, or
   // the caller may have given up on this stroke (timeout).
-  if (
-    ctx.isCancelled() ||
-    (await ctx.host.getCurrentFilePath()) !== ctx.path ||
-    (await ctx.host.getCurrentPageNum()) !== ctx.page
-  ) {
+  if (ctx.isCancelled()) {
+    return {kind: 'ignored', reason: 'page changed'};
+  }
+  const [path, page] = await Promise.all([
+    ctx.host.getCurrentFilePath(),
+    ctx.host.getCurrentPageNum(),
+  ]);
+  if (path !== ctx.path || page !== ctx.page) {
     return {kind: 'ignored', reason: 'page changed'};
   }
   return null;
@@ -797,9 +1134,8 @@ async function findStoredStroke(
     .filter(e => e.type === STROKE && e.numInPage >= 1)
     .sort((a, b) => b.numInPage - a.numInPage)
     .slice(0, RECENT_STROKES);
-  const counts = await Promise.all(
-    recent.map(async e => (await e.outline()).length),
-  );
+  // Only the counts: the points are read for the match alone.
+  const counts = await Promise.all(recent.map(pointCountOf));
   const exact = recent.findIndex((_, i) => counts[i] === pointCount);
   if (exact >= 0) {
     return recent[exact];
