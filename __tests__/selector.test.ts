@@ -724,12 +724,12 @@ describe('handlePenUp: line to select above or below', () => {
       reason: 'line crosses the writing',
     });
 
-    // 350 px: worth a look, but under 30 % of the 1404 px page.
-    const short = el(straight({x: 100, y: 800}, {x: 450, y: 800}));
+    // 160 px: worth a look, but under 12 % of the 1404 px page.
+    const short = el(straight({x: 100, y: 800}, {x: 260, y: 800}));
     const host3 = fakeHost([el(word(100, 600)), short]);
     expect(await handlePenUp([short], host3, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'line too short (350 px, needs 421)',
+      reason: 'line too short (160 px, needs 168)',
     });
   });
 
@@ -753,6 +753,16 @@ describe('handlePenUp: line to select above or below', () => {
     );
   });
 
+  it('takes a short line: a fifth of the page is enough', async () => {
+    const line = el(straight({x: 100, y: 800}, {x: 380, y: 806}));
+    const host = fakeHost([el(word(100, 600)), line]);
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 1,
+    });
+  });
+
   it('never reads the page for a dash', async () => {
     const dash = el(straight({x: 100, y: 800}, {x: 140, y: 800}));
     const host = fakeHost([dash]);
@@ -764,84 +774,5 @@ describe('handlePenUp: line to select above or below', () => {
 
     await handlePenUp([dash], host, DEFAULT_CONFIG);
     expect(reads).toBe(0);
-  });
-});
-
-describe('handlePenUp: corners to select', () => {
-  beforeEach(() => {
-    nextNum = 1;
-  });
-
-  const topLeft = (x: number, y: number) =>
-    el([
-      ...straight({x, y: y + 60}, {x, y}, 10),
-      ...straight({x, y}, {x: x + 60, y}, 10),
-    ]);
-  const bottomRight = (x: number, y: number) =>
-    el([
-      ...straight({x: x - 60, y}, {x, y}, 10),
-      ...straight({x, y}, {x, y: y - 60}, 10),
-    ]);
-
-  it('selects what the ┌ and ┘ enclose, removing both', async () => {
-    const inside = [el(word(450, 450)), el(word(600, 600))];
-    const outside = el(word(1000, 1500));
-    const tl = topLeft(400, 400);
-    const br = bottomRight(800, 700);
-    const host = fakeHost([...inside, outside, tl, br]);
-
-    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toMatchObject({
-      kind: 'selected',
-      count: 2,
-    });
-    expect(host.deleted).toEqual([[5, 4]]);
-    expect(host.calls).toEqual(['delete', 'lasso']);
-    const rect = host.lassoed[0];
-    expect(rect.left).toBeGreaterThan(440);
-    expect(rect.right).toBeLessThan(700);
-  });
-
-  it('works in either order', async () => {
-    const inside = el(word(450, 450));
-    const br = bottomRight(800, 700);
-    const tl = topLeft(400, 400);
-    const host = fakeHost([inside, br, tl]);
-
-    expect(await handlePenUp([tl], host, DEFAULT_CONFIG)).toMatchObject({
-      kind: 'selected',
-      count: 1,
-    });
-  });
-
-  it('leaves a lone corner as ink, waiting for its partner', async () => {
-    const tl = topLeft(400, 400);
-    const host = fakeHost([el(word(450, 450)), tl]);
-
-    expect(await handlePenUp([tl], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'ignored',
-      reason: 'corner without its partner (yet)',
-    });
-    expect(host.deleted).toEqual([]);
-  });
-
-  it('ignores a ┘ that is not below and right of the ┌', async () => {
-    const tl = topLeft(400, 400);
-    const br = bottomRight(380, 900); // left of the ┌
-    const host = fakeHost([el(word(450, 450)), tl, br]);
-
-    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toMatchObject({
-      kind: 'ignored',
-    });
-  });
-
-  it('leaves an empty rectangle as ink', async () => {
-    const tl = topLeft(400, 400);
-    const br = bottomRight(800, 700);
-    const host = fakeHost([el(word(1000, 1500)), tl, br]);
-
-    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toEqual({
-      kind: 'ignored',
-      reason: 'rectangle encloses nothing',
-    });
   });
 });

@@ -9,8 +9,6 @@
  * - Line to select: a straight horizontal line across the page, clear of
  *   the writing, selects everything above or below it (asking which when
  *   there is writing on both sides).
- * - Corners to select: a ┌ and a ┘ (two strokes, either order) mark the
- *   corners of a rectangle; what is inside is selected.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -21,7 +19,6 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   checkClosedLoop,
-  checkCorner,
   checkStraightLine,
   distance,
   findClosedLoop,
@@ -33,7 +30,6 @@ import {
   strokesTouch,
   unionBoxes,
   type Box,
-  type CornerKind,
   type Pt,
 } from './geometry';
 
@@ -96,7 +92,6 @@ export interface Gestures {
   loopSelect: boolean;
   marginErase: boolean;
   lineSelect?: boolean;
-  cornerSelect?: boolean;
   /** Repaint the page after an erase (against ghosting). */
   screenRefresh?: boolean;
 }
@@ -169,7 +164,6 @@ export async function handlePenUp(
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
   let isLine = false;
-  let isCorner = false;
   for (let i = ink.length - 1; i >= 0 && !gesture; i--) {
     const candidate = ink[i];
     const pts = await candidate.outline();
@@ -204,27 +198,12 @@ export async function handlePenUp(
       }
       trace(`  line check: ${'reason' in line ? line.reason : 'too short'}`);
     }
-    if (gestures.cornerSelect ?? true) {
-      const corner = checkCorner(pts, config.corner);
-      const swapped = pts.map(p => ({x: p.y, y: p.x}));
-      if ('kind' in corner || 'kind' in checkCorner(swapped, config.corner)) {
-        [gesture, points, isCorner] = [candidate, pts, true];
-        break;
-      }
-      trace(`  corner check: ${corner.reason}`);
-    }
   }
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
   trace(
-    polygon
-      ? 'shape: closed loop'
-      : isLine
-      ? 'shape: line'
-      : isCorner
-      ? 'shape: corner'
-      : 'shape: wave',
+    polygon ? 'shape: closed loop' : isLine ? 'shape: line' : 'shape: wave',
   );
 
   const path = await host.getCurrentFilePath();
@@ -274,13 +253,6 @@ export async function handlePenUp(
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
   };
-  if (isCorner) {
-    const corner = checkCorner(stored, config.corner);
-    if ('reason' in corner) {
-      return {kind: 'ignored', reason: `corner on the page: ${corner.reason}`};
-    }
-    return selectInCorners(ctx, corner);
-  }
   if (isLine) {
     const line = checkStraightLine(stored, config.straightLine);
     if ('reason' in line) {
@@ -366,97 +338,6 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
   return {kind: 'selected', count: boxes.length, rect};
-}
-
-/**
- * Select what is inside the rectangle marked by this corner and its
- * partner: the newest opposite corner, diagonally across, among the
- * latest strokes. Without a partner the corner stays as ink: it may be
- * the first of the two.
- */
-async function selectInCorners(
-  ctx: Context,
-  corner: {kind: CornerKind; at: Pt},
-): Promise<Outcome> {
-  const {host, config, path, page, stroke} = ctx;
-  ctx.trace(`corner: ${corner.kind} at ${fmt(corner.at)}`);
-  const recent = ctx.others
-    .filter(e => e.type === STROKE)
-    .sort((a, b) => b.numInPage - a.numInPage)
-    .slice(0, config.cornerPartnerSearch);
-  const recentOutlines = await outlinesOf(recent);
-  let partner: PageElement | null = null;
-  let rect: Box | null = null;
-  for (let i = 0; i < recent.length && !partner; i++) {
-    const other = checkCorner(recentOutlines[i], config.corner);
-    if (!('kind' in other) || other.kind === corner.kind) {
-      continue;
-    }
-    const [tl, br] =
-      corner.kind === 'topLeft' ? [corner.at, other.at] : [other.at, corner.at];
-    if (
-      br.x - tl.x >= config.corner.minLeg &&
-      br.y - tl.y >= config.corner.minLeg
-    ) {
-      partner = recent[i];
-      rect = {left: tl.x, top: tl.y, right: br.x, bottom: br.y};
-    }
-  }
-  if (!partner || !rect) {
-    return {kind: 'ignored', reason: 'corner without its partner (yet)'};
-  }
-  ctx.trace(
-    `rectangle: ${Math.round(rect.right - rect.left)}×${Math.round(
-      rect.bottom - rect.top,
-    )} px, partner #${partner.numInPage}`,
-  );
-
-  const area = growPolygon(
-    [
-      {x: rect.left, y: rect.top},
-      {x: rect.right, y: rect.top},
-      {x: rect.right, y: rect.bottom},
-      {x: rect.left, y: rect.bottom},
-    ],
-    config.loopMargin,
-  );
-  const inside = ctx.others.filter(e => e !== partner);
-  const boxes: Box[] = [];
-  for (const outline of await outlinesOf(inside)) {
-    if (
-      outline.length > 0 &&
-      fractionInside(outline, area) >= config.minInsideFraction
-    ) {
-      boxes.push(boundingBox(outline));
-    }
-  }
-  ctx.trace(`enclosed: ${boxes.length} element(s)`);
-  const enclosed = unionBoxes(boxes);
-  if (!enclosed) {
-    return {kind: 'ignored', reason: 'rectangle encloses nothing'};
-  }
-  const size = await host.getPageSize(path, page);
-  if (!size) {
-    return {kind: 'failed', reason: 'page size unavailable'};
-  }
-
-  const blocked = await checkBeforeEdit(ctx);
-  if (blocked) {
-    return blocked;
-  }
-  const nums = [stroke.numInPage, partner.numInPage].sort((a, b) => b - a);
-  if (!(await host.deleteElements(nums, page, stroke.layerNum))) {
-    return {kind: 'failed', reason: 'could not remove the corners'};
-  }
-  ctx.trace('corners removed');
-  const lasso = padAndClamp(enclosed, config.lassoPadding, size);
-  ctx.trace(
-    `lasso: ${lasso.left},${lasso.top} → ${lasso.right},${lasso.bottom}`,
-  );
-  if (!(await host.lassoRect(lasso))) {
-    return {kind: 'failed', reason: 'could not create lasso selection'};
-  }
-  return {kind: 'selected', count: boxes.length, rect: lasso};
 }
 
 /**

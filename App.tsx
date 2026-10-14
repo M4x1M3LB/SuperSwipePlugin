@@ -57,15 +57,14 @@ function App(): React.JSX.Element {
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
-        lasso-select them, or a ┌ and a ┘ at the corners of what to select.
-        A long straight line across the page, clear of the writing, selects
-        what is above or below it (you are asked which). To erase a line of writing, draw a sideways wave
-        with three bounces or more (∿∿, a tilde with an extra bounce) in the
-        margin next to it, left or right, leaving a small gap.
+        lasso-select them. A straight line across the page, clear of the
+        writing, selects what is above or below it (you are asked which when
+        there is writing on both sides). To erase a line of writing, draw a
+        sideways wave with three bounces or more (∿∿, a tilde with an extra
+        bounce) in the margin next to it, left or right, leaving a small gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
-      <Toggle label="Corners to select" name="cornerSelect" />
       <Toggle label="Line to select above/below" name="lineSelect" />
       <Toggle label="Margin wave to erase" name="marginErase" />
       <Toggle label="Refresh screen after an erase" name="screenRefresh" />

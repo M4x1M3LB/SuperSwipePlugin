@@ -2,7 +2,6 @@ import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
   netTurning,
-  checkCorner,
   checkStraightLine,
   checkWave,
   findWritingLine,
@@ -268,53 +267,6 @@ describe('checkStraightLine', () => {
         ...line({x: 100, y: 8}, {x: 500, y: 8}),
       ]),
     ).toEqual({reason: 'not straight (goes back and forth)'});
-  });
-});
-
-describe('checkCorner', () => {
-  const corner = (elbow: Pt, h: Pt, v: Pt) => [
-    ...line(v, elbow, 15),
-    ...line(elbow, h, 15).slice(1),
-  ];
-
-  it('recognises ┌ and ┘ drawn from either end', () => {
-    const tl = corner({x: 100, y: 100}, {x: 180, y: 100}, {x: 100, y: 180});
-    expect(checkCorner(tl)).toEqual({kind: 'topLeft', at: {x: 100, y: 100}});
-    expect(checkCorner([...tl].reverse())).toMatchObject({kind: 'topLeft'});
-    const br = corner({x: 500, y: 500}, {x: 420, y: 500}, {x: 500, y: 430});
-    expect(checkCorner(br)).toEqual({
-      kind: 'bottomRight',
-      at: {x: 500, y: 500},
-    });
-  });
-
-  it('tolerates slightly tilted, wobbly legs', () => {
-    const tl = corner({x: 100, y: 100}, {x: 190, y: 112}, {x: 108, y: 170}).map(
-      (p, i) => ({x: p.x + (i % 2) * 2, y: p.y}),
-    );
-    expect(checkCorner(tl)).toMatchObject({kind: 'topLeft'});
-  });
-
-  it('only counts ┌ and ┘', () => {
-    const l = corner({x: 100, y: 180}, {x: 160, y: 180}, {x: 100, y: 100});
-    expect(checkCorner(l)).toEqual({
-      reason: 'a corner, but only ┌ and ┘ count',
-    });
-  });
-
-  it('rejects small, lopsided and curved strokes', () => {
-    expect(
-      checkCorner(corner({x: 0, y: 0}, {x: 20, y: 0}, {x: 0, y: 20})),
-    ).toEqual({reason: 'legs too short'});
-    expect(
-      checkCorner(corner({x: 0, y: 0}, {x: 400, y: 0}, {x: 0, y: 40})),
-    ).toEqual({reason: 'legs too unequal'});
-    expect(checkCorner(line({x: 0, y: 0}, {x: 300, y: 0}))).toHaveProperty(
-      'reason',
-    );
-    expect(checkCorner(ellipse(300, 300, 80, 80, 0.5))).toHaveProperty(
-      'reason',
-    );
   });
 });
 

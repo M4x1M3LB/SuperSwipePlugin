@@ -1,16 +1,13 @@
 # SuperSwipe — pen gestures for Supernote notes
 
-A Supernote plugin for NOTE files, with pen gestures:
+A Supernote plugin for NOTE files, with three pen gestures:
 
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
-- **Corners to select:** draw a ┌ and a ┘ (two strokes, either order) at
-  the corners of what you want; what is inside is selected and both
-  corners disappear.
-- **Line to select:** draw a long straight line across the page, clear of
-  the writing; everything above or below it is selected. With writing on
-  both sides, the device asks which.
+- **Line to select:** draw a straight line across the page, clear of the
+  writing; everything above or below it is selected. With writing on both
+  sides, the device asks which.
 - **Margin wave to erase:** draw a sideways wave with three bounces or more
   (∿∿, a tilde with an extra bounce) in the margin next to a line of
   writing, left or right, and that whole line is erased, with the wave.
@@ -31,19 +28,10 @@ All gestures:
 - Are found even when quickly followed by more writing: the device delivers
   strokes drawn in quick succession together, and every one of them is
   checked, newest first.
-- Never miss a stroke drawn while the previous one is still being looked
-  at (such as the second corner right after the first): it is handled
-  next, instead of being dropped.
+- Never miss a stroke drawn while the previous one is still being handled:
+  it is handled next, instead of being dropped.
 - Read the page's strokes in parallel batches, which is much faster on a
   full page.
-
-After an erase, the screen is refreshed (switch on the plugin screen), so
-deleted strokes do not linger as ghosts: the note is reloaded, which
-repaints the page. Safely: only once the saved file has been read back and
-no longer holds the deleted strokes (a reload that reads the file before a
-save has finished brings old strokes back), and only if the pen was not used
-since the save (it would be lost). The loop is not followed by a refresh: it
-is slow and would drop the selection.
 
 Loop to select:
 
@@ -62,33 +50,21 @@ Loop to select:
 - Circling twice works too (inside is decided by winding, not by counting
   crossings).
 
-Corners to select:
-
-- Each corner is one stroke: a horizontal and a vertical leg, roughly
-  straight (within 30° of the axes), each at least 30 px, drawn from either
-  end. Only ┌ (top-left) and ┘ (bottom-right) count, so an "L" never does.
-- When one is drawn, its partner is looked for among the 20 newest strokes
-  on the page: the opposite corner, diagonally across. Order and timing do
-  not matter. Without a partner, the corner stays as ink (it may be the
-  first of the two).
-- Selected: every element with at least half of its outline inside the
-  rectangle (counted 20 px larger, as for the loop). An empty rectangle
-  leaves both corners as ink.
-
 Line to select:
 
-- One roughly straight stroke, within 15° of horizontal, at least 30 % of
-  the page wide. Hand-drawn is fine: it may bow by up to 10 % of its length
-  and shake (path up to 1.3 × its length). A wobbly line that passes for
-  a wave is taken as a line once it turns out wider than a wave can be.
+- One roughly straight stroke, within 15° of horizontal, at least 12 % of
+  the page wide (about 170 px, a few words). Hand-drawn is fine: it may bow
+  by up to 10 % of its length and shake (path up to 1.3 × its length). A
+  wobbly line that passes for a wave is taken as a line once it turns out
+  wider than a wave can be.
 - It must not cross any writing (a strike-through) or come within 20 px of
   writing over its length (an underline): those stay ink.
 - Writing on one side only: that side is selected at once. On both sides:
   a dialog asks "Above" or "Below"; no answer, nothing happens.
 - Selected: every element whose centre is on that side, across the whole
-  page width.
-- A line shorter than 300 never causes the page to be read, so dashes and
-  "t" bars cost nothing.
+  page width. The line is removed.
+- A line shorter than 150 px never causes the page to be read, so dashes
+  and "t" bars cost nothing.
 
 Margin wave to erase:
 
@@ -102,10 +78,10 @@ Margin wave to erase:
   height) away, so a wavy word written right after the line does not erase
   it.
 - It has no direction: it erases the line on whichever side the writing is.
-  Writing on both sides (a mark inside the text), touching it or too close:
-  nothing happens. A mark with no writing next to it stays as ink.
+  Writing on both sides (a wave inside the text), touching it or too close:
+  nothing happens. A wave with no writing next to it stays as ink.
 - The line it erases: every stroke whose vertical centre is level with the
-  mark (within 0.9 × its height, or at least 36 px), on that side, however
+  wave (within 0.9 × its height, or at least 36 px), on that side, however
   far: dots and accents included. Strokes touching those go too (descenders,
   joined letters).
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
@@ -114,48 +90,53 @@ Margin wave to erase:
   ratios only, so its scale and axes do not matter).
 - **Restore last erase** on the plugin screen puts the last erased line
   back (same note; the plugin keeps it until the next erase).
+- Afterwards the screen is refreshed (switch on the plugin screen), so the
+  erased strokes do not linger as ghosts: the note is reloaded, which
+  repaints the page. Only once the saved file has been read back and no
+  longer holds the erased strokes (a reload that reads the file before a
+  save has finished brings old strokes back), and only if the pen was not
+  used since the save (it would be lost). Selections are not followed by a
+  refresh: it is slow and would drop the selection.
 
 ## Limitations (Supernote SDK)
 
-- **Reloading only when safe.** A reload that read the file before the save
-  had finished brought back strokes erased earlier (seen on device in 0.0.5
-  and 0.0.7), so the plugin reloads only after reading the saved file back.
 - **Gestures clear the page's undo history.** The only SDK call that can
   delete specific strokes is `deletePageElements`, and it resets undo history
   on the page (measured on device by other plugin authors). Reading the
-  page also requires saving the note first, which resets it too. For erases, use
-  **Restore last erase** instead. It can fail if the device reclaimed the
-  plugin's memory in the meantime.
-- **The selection is a rectangle.** `lassoElements` only accepts a rectangle,
-  so the selection is the bounding box of everything the loop enclosed.
-  Strokes that sit inside that box but outside your loop are selected too.
-- **The above/below dialog** is the device's own; which button is which
-  is not documented, so the trace shows its raw answer ("dialog returned
+  page also requires saving the note first, which resets it too. For erases,
+  use **Restore last erase** instead. It can fail if the device reclaimed
+  the plugin's memory in the meantime.
+- **The selection is a rectangle.** `lassoElements` only accepts a
+  rectangle, so the selection is the bounding box of everything the loop
+  enclosed, or everything on the chosen side of the line. Strokes that sit
+  inside that box but outside your loop are selected too.
+- **The above/below dialog** is the device's own; which button is which is
+  not documented, so the trace shows its raw answer ("dialog returned
   true/false") in case they come out swapped.
-- **Circling for emphasis, or a wave next to a line.** Circling a word
-  selects it, and a wave beside a line erases it. A wavy word (such as a
-  cursive "mm") written alone at the end of a line, after a wide gap, can
-  be taken for the mark: **Restore last erase**
-  brings the line back. Use the marker for those,
-  or turn a gesture off from the plugin screen.
+- **Gestures that are also ordinary ink.** Circling a word selects it, a
+  long line clear of the writing selects, and a wave beside a line erases
+  it. A wavy word (such as a cursive "mm") written alone at the end of a
+  line, after a wide gap, can be taken for the wave: **Restore last erase**
+  brings the line back. Use the marker for those, or turn a gesture off
+  from the plugin screen.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.21.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.22.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
-4. Draw a loop around some writing, ┌ and ┘ around a block, a line under
-   a section, or a wave beside a line.
+4. Draw a loop around some writing, a line under a section, or a wave
+   beside a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
-happened to the last stroke, with a step-by-step trace, the number of
-strokes the plugin has received, and the last 8 strokes with why each was or
-was not taken as a gesture (useful when a gesture is missed). The switches
-reset when the plugin host restarts.
+happened to the last stroke, with a step-by-step trace ending with how long
+it took, the number of strokes the plugin has received, and the last 8
+strokes with why each was or was not taken as a gesture (useful when a
+gesture is missed). The switches reset when the plugin host restarts.
 
 ## Development
 
@@ -173,11 +154,11 @@ Layout:
 | --- | --- |
 | `index.js` | Plugin entry: `PluginManager.init()`, buttons, starts the listener |
 | `App.tsx` | Plugin screen (switches, restore, file access, last result) |
-| `src/geometry.ts` | Loop, corner, line and wave detection, containment, line of writing (pure) |
+| `src/geometry.ts` | Loop, line and wave detection, containment, line of writing (pure) |
 | `src/selector.ts` | Gesture flows on pen-up, against a `Host` interface (pure) |
-| `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, erase restore |
-| `src/plugin.ts` | Wires the pen-up event to the selector with a timeout |
-| `src/config.ts` | Thresholds (pen types, loop and wave tolerance, line rules) |
+| `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, dialog, erase restore |
+| `src/plugin.ts` | Wires the pen-up event to the selector, queues strokes while busy |
+| `src/config.ts` | Thresholds (pen types, loop, line and wave rules) |
 
 `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
 will treat it as a different plugin. Bump `versionCode` for each release.

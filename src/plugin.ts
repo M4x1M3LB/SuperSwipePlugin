@@ -21,8 +21,8 @@ export function startGestures(): void {
   // still busy after the time limit is abandoned when the next one arrives.
   let busy: {since: number; abandon: () => void} | null = null;
   // Strokes that arrived while another was being handled. They are handled
-  // next, together (newest first), not dropped: the second corner of a
-  // rectangle is often drawn while the first is still being looked at.
+  // next, together (newest first), not dropped: a gesture is often drawn
+  // right after a stroke that made us read the page.
   let waiting: Element[] = [];
 
   const handle = (raw: Element[]) => {
@@ -79,12 +79,7 @@ export function startGestures(): void {
       status.countPenUp();
       const gestures = status.gestures();
       if (
-        !(
-          gestures.loopSelect ||
-          gestures.marginErase ||
-          gestures.lineSelect ||
-          gestures.cornerSelect
-        ) ||
+        !(gestures.loopSelect || gestures.marginErase || gestures.lineSelect) ||
         !Array.isArray(msg)
       ) {
         return;

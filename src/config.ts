@@ -1,10 +1,8 @@
 import {
-  DEFAULT_CORNER_OPTIONS,
   DEFAULT_LOOP_OPTIONS,
   DEFAULT_STRAIGHT_LINE_OPTIONS,
   DEFAULT_WAVE_OPTIONS,
   DEFAULT_WRITING_LINE_OPTIONS,
-  type CornerOptions,
   type LoopOptions,
   type StraightLineOptions,
   type WaveOptions,
@@ -27,10 +25,6 @@ export interface SelectorConfig {
    * never stricter than it reads.
    */
   lineMinPenUpLength: number;
-  /** The ┌ and ┘ corners of a selection rectangle. */
-  corner: CornerOptions;
-  /** How many of the newest strokes to search for a corner's partner. */
-  cornerPartnerSearch: number;
   /** Which strokes form the line of writing next to the mark. */
   writingLine: WritingLineOptions;
   /** Strokes closer than this, in px, count as touching. */
@@ -60,11 +54,9 @@ export const DEFAULT_CONFIG: SelectorConfig = {
   loop: DEFAULT_LOOP_OPTIONS,
   wave: DEFAULT_WAVE_OPTIONS,
   straightLine: DEFAULT_STRAIGHT_LINE_OPTIONS,
-  lineMinWidthRatio: 0.3,
+  lineMinWidthRatio: 0.12,
   lineClearance: 20,
-  lineMinPenUpLength: 300,
-  corner: DEFAULT_CORNER_OPTIONS,
-  cornerPartnerSearch: 20,
+  lineMinPenUpLength: 150,
   writingLine: DEFAULT_WRITING_LINE_OPTIONS,
   eraseTouchTolerance: 4,
   triggerPenTypes: [1, 10, 15, 16],

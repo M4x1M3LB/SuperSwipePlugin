@@ -38,16 +38,16 @@ describe('pen-up events', () => {
     startGestures();
     const [listener] = listeners;
 
-    listener.onMsg(['first corner']);
-    listener.onMsg(['second corner']);
+    listener.onMsg(['gesture']);
+    listener.onMsg(['next gesture']);
     listener.onMsg(['more writing']);
-    expect(calls.map(c => c.elements)).toEqual([['first corner']]);
+    expect(calls.map(c => c.elements)).toEqual([['gesture']]);
 
     calls[0].finish();
     await flush();
     expect(calls.map(c => c.elements)).toEqual([
-      ['first corner'],
-      ['second corner', 'more writing'],
+      ['gesture'],
+      ['next gesture', 'more writing'],
     ]);
 
     calls[1].finish();
