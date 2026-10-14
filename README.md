@@ -34,8 +34,12 @@ All gestures:
 - Strokes drawn while the previous one is still being handled are not
   dropped: they are checked next, together (the newest gesture among them
   wins).
-- Read the page's strokes in parallel batches, which is much faster on a
-  full page.
+- Read the page's strokes in parallel (up to 64 at a time, the next
+  starting as each one finishes), and only their point counts where that is
+  enough (finding the gesture on the page, checking an erase). A stroke too
+  small for any gesture, a line or bar too short or too long for the page,
+  and a bar followed by more writing are left as ink without saving or
+  reading the page.
 
 Loop to select:
 
@@ -159,16 +163,19 @@ Margin wave to erase:
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
-   access** and choose **Always allow** (needed to remove strokes).
+   access** and choose **Always allow** (needed to remove strokes; with
+   "Always allow" the permissions are not checked again on every gesture).
 4. Draw a loop around some writing, a line under a section, a bar in the
    margin beside a paragraph, or a wave beside a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
 happened to the last stroke, with a step-by-step trace ending with how long
-it took, the number of strokes the plugin has received, and the last 8
-strokes with why each was or was not taken as a gesture (useful when a
-gesture is missed). The switches reset when the plugin host restarts.
+it took and a `time:` line (ms per device call; calls made in parallel are
+summed), the number of strokes the plugin has received, how many strokes
+made it read the page and how each ended, pen events by action, and the
+last 8 strokes with why each was or was not taken as a gesture (useful when
+a gesture is missed). The switches reset when the plugin host restarts.
 
 ## Development
 

@@ -1,6 +1,15 @@
 import {
   DEFAULT_LOOP_OPTIONS,
+  boundingBox,
+  checkClosedLoop,
+  closingPair,
+  distance,
   findClosedLoop,
+  fractionInside,
+  insideAtLeast,
+  minCountFor,
+  overlapsWithin,
+  pathLength,
   netTurning,
   checkStraightLine,
   checkVerticalBar,
@@ -9,13 +18,22 @@ import {
   checkWave,
   findWritingLine,
   strokesTouch,
-  fractionInside,
   padAndClamp,
   pointInPolygon,
   polygonArea,
   unionBoxes,
+  type LoopOptions,
   type Pt,
 } from '../src/geometry';
+
+/** A small seeded random generator (Park-Miller), for repeatable tests. */
+function random(seed: number): () => number {
+  let state = seed % 2147483647 || 1;
+  return () => {
+    state = (state * 16807) % 2147483647;
+    return (state - 1) / 2147483646;
+  };
+}
 
 /** Hand-drawn-ish ellipse: `turns` of a full revolution, starting at angle 0. */
 function ellipse(
@@ -461,5 +479,192 @@ describe('strokesTouch', () => {
     ];
     expect(strokesTouch(stem, dot, 4)).toBe(false);
     expect(strokesTouch(stem, [], 4)).toBe(false);
+  });
+});
+
+describe('overlapsWithin', () => {
+  const box = {left: 0, top: 0, right: 10, bottom: 10};
+
+  it('counts boxes within the margin as overlapping', () => {
+    expect(
+      overlapsWithin(box, {left: 5, top: 5, right: 20, bottom: 20}, 0),
+    ).toBe(true);
+    expect(
+      overlapsWithin(box, {left: 14, top: 0, right: 20, bottom: 10}, 4),
+    ).toBe(true);
+    expect(
+      overlapsWithin(box, {left: 15, top: 0, right: 20, bottom: 10}, 4),
+    ).toBe(false);
+  });
+});
+
+describe('strokesTouch with precomputed boxes', () => {
+  it('gives the same answers as without them', () => {
+    const next = random(7);
+    const stroke = (): Pt[] => {
+      const x = next() * 200;
+      const y = next() * 200;
+      return Array.from({length: 1 + Math.floor(next() * 8)}, () => ({
+        x: x + next() * 40,
+        y: y + next() * 40,
+      }));
+    };
+    for (let k = 0; k < 2000; k++) {
+      const a = stroke();
+      const b = stroke();
+      const tolerance = next() * 10;
+      expect(
+        strokesTouch(a, b, tolerance, boundingBox(a), boundingBox(b)),
+      ).toBe(strokesTouch(a, b, tolerance));
+    }
+  });
+});
+
+describe('insideAtLeast', () => {
+  it('finds the exact count threshold for any fraction', () => {
+    const fractions = [0, 0.1, 0.2, 0.3, 1 / 3, 0.5, 0.6, 2 / 3, 0.7, 0.9, 1];
+    const wrong: string[] = [];
+    for (let n = 1; n <= 200; n++) {
+      for (const f of [...fractions, 0.1 * 3, 1 - 0.7, 1.5, -0.2]) {
+        const k = minCountFor(f, n);
+        for (let count = 0; count <= n; count++) {
+          if (count >= k !== count / n >= f) {
+            wrong.push(`${count}/${n} vs ${f}`);
+          }
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('agrees with fractionInside, early exits included', () => {
+    const next = random(11);
+    const square = [
+      {x: 0, y: 0},
+      {x: 100, y: 0},
+      {x: 100, y: 100},
+      {x: 0, y: 100},
+    ];
+    const star = Array.from({length: 10}, (_, i) => {
+      const r = i % 2 === 0 ? 100 : 40;
+      const a = (i / 10) * 2 * Math.PI;
+      return {x: 100 + r * Math.cos(a), y: 100 + r * Math.sin(a)};
+    });
+    for (let k = 0; k < 3000; k++) {
+      const polygon = k % 2 === 0 ? square : star;
+      const n = Math.floor(next() * 30);
+      const points = Array.from({length: n}, () => ({
+        x: Math.round(next() * 260 - 30),
+        y: Math.round(next() * 260 - 30),
+      }));
+      const f = [0, 0.25, 0.5, 1 / 3, 0.75, 1][Math.floor(next() * 6)];
+      expect(insideAtLeast(points, polygon, f)).toBe(
+        fractionInside(points, polygon) >= f,
+      );
+      expect(insideAtLeast(points, polygon, f, boundingBox(polygon))).toBe(
+        fractionInside(points, polygon) >= f,
+      );
+    }
+  });
+});
+
+describe('closingPair', () => {
+  /** The closing-pair search as it was, comparing Math.hypot distances. */
+  function oldPair(points: Pt[], options: LoopOptions) {
+    const n = points.length;
+    const window = Math.max(1, Math.floor(n * options.endSearchRatio));
+    let bestI = -1;
+    let bestJ = -1;
+    let bestGap = Infinity;
+    for (let i = 0; i < window; i++) {
+      for (let j = n - window; j < n; j++) {
+        if (
+          j - i < options.minPoints - 1 ||
+          j - i < options.minSpanRatio * (n - 1)
+        ) {
+          continue;
+        }
+        const gap = distance(points[i], points[j]);
+        if (gap < bestGap) {
+          bestGap = gap;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+    return {i: bestI, j: bestJ, gap: bestGap};
+  }
+
+  /** checkClosedLoop as it was, on top of the old search. */
+  function oldCheck(points: Pt[], options: LoopOptions) {
+    const n = points.length;
+    if (n < options.minPoints) {
+      return {reason: 'too few points'};
+    }
+    const box = boundingBox(points);
+    if (
+      box.right - box.left < options.minSize ||
+      box.bottom - box.top < options.minSize
+    ) {
+      return {reason: 'too small'};
+    }
+    const length = pathLength(points);
+    const maxGap = Math.max(options.closeGapPx, options.closeGapRatio * length);
+    const {i, j, gap} = oldPair(points, options);
+    if (i < 0 || gap > maxGap) {
+      return {
+        reason: `ends ${Math.round(gap)} apart (max ${Math.round(maxGap)})`,
+      };
+    }
+    const polygon = points.slice(i, j + 1);
+    const turned = Math.abs(netTurning(polygon));
+    if (turned < options.minTurnDegrees) {
+      return {reason: `turns only ${Math.round(turned)}°`};
+    }
+    const polyBox = boundingBox(polygon);
+    const boxArea =
+      (polyBox.right - polyBox.left) * (polyBox.bottom - polyBox.top);
+    if (boxArea <= 0 || polygonArea(polygon) / boxArea < options.minFillRatio) {
+      return {reason: 'encloses too little area'};
+    }
+    return {polygon};
+  }
+
+  it('picks the same pair as the old search, ties included', () => {
+    const next = random(3);
+    for (let k = 0; k < 3000; k++) {
+      const n = 2 + Math.floor(next() * 60);
+      const grid = 1 + Math.floor(next() * 12); // small grids: many ties
+      const points = Array.from({length: n}, () => ({
+        x: Math.floor(next() * grid),
+        y: Math.floor(next() * grid),
+      }));
+      const options: LoopOptions = {
+        ...DEFAULT_LOOP_OPTIONS,
+        minPoints: 1 + Math.floor(next() * 14),
+        endSearchRatio: [0.2, 0.35, 0.5, 1][Math.floor(next() * 4)],
+        minSpanRatio: [0, 0.3, 0.6, 0.75][Math.floor(next() * 4)],
+      };
+      expect(closingPair(points, options)).toEqual(oldPair(points, options));
+    }
+  });
+
+  it('leaves checkClosedLoop unchanged on hand-drawn integer loops', () => {
+    const next = random(5);
+    for (let k = 0; k < 1500; k++) {
+      const n = 12 + Math.floor(next() * 80);
+      const turns = 0.6 + next() * 0.7;
+      const rx = 10 + next() * 200;
+      const ry = 10 + next() * 200;
+      const points = Array.from({length: n}, (_, i) => {
+        const a = (i / (n - 1)) * turns * 2 * Math.PI;
+        return {
+          x: Math.round(500 + rx * Math.cos(a) + (next() - 0.5) * 6),
+          y: Math.round(500 + ry * Math.sin(a) + (next() - 0.5) * 6),
+        };
+      });
+      const result = checkClosedLoop(points);
+      expect(result).toEqual(oldCheck(points, DEFAULT_LOOP_OPTIONS));
+    }
   });
 });

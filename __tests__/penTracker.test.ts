@@ -49,6 +49,22 @@ describe('PenTracker', () => {
     jest.useRealTimers();
   });
 
+  it('ignores pen hover events', async () => {
+    const now = jest.spyOn(Date, 'now');
+    const tracker = new PenTracker();
+    tracker.start();
+    now.mockReturnValue(1000);
+    listeners[0].onMsg(pen(0));
+    listeners[0].onMsg(pen(1));
+    const savedAt = 2000;
+    now.mockReturnValue(3000);
+    listeners[0].onMsg(pen(7)); // hovering over the page after the save
+    expect(tracker.quietSince(savedAt)).toBe(true);
+    expect(tracker.downCount()).toBe(1);
+    await expect(tracker.waitForUp(5000)).resolves.toBeUndefined();
+    now.mockRestore();
+  });
+
   it('ignores finger touches', async () => {
     const tracker = new PenTracker();
     tracker.start();

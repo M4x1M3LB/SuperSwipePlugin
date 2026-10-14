@@ -1,6 +1,11 @@
 import {DEFAULT_CONFIG} from '../src/config';
 import type {Box, Pt} from '../src/geometry';
-import {handlePenUp, type Host, type PageElement} from '../src/selector';
+import {
+  handlePenUp,
+  outlinesOf,
+  type Host,
+  type PageElement,
+} from '../src/selector';
 
 function ellipse(cx: number, cy: number, rx: number, ry: number, n = 80): Pt[] {
   return Array.from({length: n + 1}, (_, i) => {
@@ -36,7 +41,7 @@ function word(x: number, y: number, width = 80): Pt[] {
 let nextNum = 1;
 function el(points: Pt[], overrides: Partial<PageElement> = {}): PageElement {
   const num = nextNum++;
-  return {
+  const e: PageElement = {
     uuid: `uuid-${num}`,
     type: 0,
     numInPage: num,
@@ -46,7 +51,21 @@ function el(points: Pt[], overrides: Partial<PageElement> = {}): PageElement {
     outline: async () => points,
     ...overrides,
   };
+  // As the device host: the count and first point without the rest.
+  e.pointCount ??= async () => (await e.outline()).length;
+  e.firstPoint ??= async () => (await e.outline())[0];
+  return e;
 }
+
+/** An element without pointCount/firstPoint (hosts that only read outlines). */
+function plainEl(points: Pt[]): PageElement {
+  const e = el(points);
+  delete e.pointCount;
+  delete e.firstPoint;
+  return e;
+}
+
+const flush = () => new Promise(r => setImmediate(r));
 
 interface FakeHost extends Host {
   deleted: number[][];
@@ -997,5 +1016,382 @@ describe('handlePenUp: margin bar to select a block', () => {
         gestures: {loopSelect: true, marginErase: true, barSelect: false},
       }),
     ).toEqual({kind: 'ignored', reason: 'not a gesture'});
+  });
+});
+
+describe('handlePenUp: no page read for what cannot be a gesture', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  /** A host that records whether the page or the file was asked for. */
+  function watchedHost(page: PageElement[]) {
+    const getPageElements = jest.fn(async () => page);
+    const getCurrentFilePath = jest.fn(
+      async () => '/storage/emulated/0/Note/demo.note',
+    );
+    const host = fakeHost(page, {getPageElements, getCurrentFilePath});
+    return {host, getPageElements, getCurrentFilePath};
+  }
+
+  it('leaves a closed letter in EMR units alone', async () => {
+    // A 20 px "o" as the digitiser reports it: 8.45 × larger, turned a
+    // quarter. A loop on the pen-up copy, but under 30 px on the page.
+    const o = el(
+      ellipse(500, 500, 10, 10).map(p => ({x: p.y * 8.45, y: p.x * 8.45})),
+    );
+    const {host, getPageElements, getCurrentFilePath} = watchedHost([o]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([o], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'ignored', reason: 'not a gesture'});
+    expect(getPageElements).not.toHaveBeenCalled();
+    expect(getCurrentFilePath).not.toHaveBeenCalled();
+    expect(lines).toContain(
+      '  loop check: too small on the page (~20 px, needs 30)',
+    );
+  });
+
+  it('leaves a tiny wavy scribble alone', async () => {
+    // 15 x 6 px with 3 bounces: a wave on the pen-up copy, too small for
+    // any gesture on the page (a wave is at least 20 px wide).
+    const scribble = el(
+      Array.from({length: 31}, (_, i) => ({
+        x: 300 + i / 2,
+        y: 500 - 3 * Math.sin((3 * Math.PI * i) / 30),
+      })),
+    );
+    const {host, getPageElements, getCurrentFilePath} = watchedHost([
+      el(word(100, 500)),
+      scribble,
+    ]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([scribble], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'ignored', reason: 'not a gesture'});
+    expect(getPageElements).not.toHaveBeenCalled();
+    expect(getCurrentFilePath).not.toHaveBeenCalled();
+    // One line, and still a "wave check:" for the stroke history.
+    expect(lines.filter(l => l.startsWith('  '))).toEqual([
+      '  wave check: too small for any gesture (~15 px)',
+    ]);
+  });
+
+  it('refuses a line too short for the page from its size alone', async () => {
+    const short = el(straight({x: 100, y: 800}, {x: 300, y: 800}));
+    const {host, getPageElements} = watchedHost([el(word(100, 600)), short]);
+    host.getPageSize = async () => ({width: 1920, height: 2560});
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([short], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'ignored', reason: 'line too short (200 px, needs 230)'});
+    expect(getPageElements).not.toHaveBeenCalled();
+    expect(lines).toContain(
+      'pre-check on page size 1920x2560: line too short (200 px, needs 230) (no page read)',
+    );
+    expect(lines.filter(l => l.includes('check:'))).not.toContainEqual(
+      expect.stringContaining('pre-check'),
+    );
+  });
+
+  it('refuses a bar longer than a page rule from the page size alone', async () => {
+    const rule = el(straight({x: 70, y: 100}, {x: 73, y: 1600}));
+    const {host, getPageElements} = watchedHost([el(word(100, 600)), rule]);
+
+    expect(await handlePenUp([rule], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'bar too long (a page rule?)',
+    });
+    expect(getPageElements).not.toHaveBeenCalled();
+  });
+
+  it('reads the page size again after the save when it was unavailable before', async () => {
+    const line = el(straight({x: 100, y: 800}, {x: 1000, y: 802}));
+    const host = fakeHost([el(word(100, 600)), line]);
+    const getPageSize = jest
+      .fn<Promise<{width: number; height: number} | null>, [string, number]>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({width: 1404, height: 1872});
+    host.getPageSize = getPageSize;
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 1,
+    });
+    expect(getPageSize).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a bar followed by more writing in the same burst without any host call', async () => {
+    const block = [100, 140, 180, 220].flatMap(x =>
+      [500, 580, 660].map(y => el(letter(x, y))),
+    );
+    const mark = el(straight({x: 70, y: 495}, {x: 73, y: 705}));
+    const label = el(letter(20, 600));
+    const {host, getPageElements, getCurrentFilePath} = watchedHost([
+      ...block,
+      mark,
+      label,
+    ]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark, label], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'ignored', reason: 'bar followed by more writing'});
+    expect(getCurrentFilePath).not.toHaveBeenCalled();
+    expect(getPageElements).not.toHaveBeenCalled();
+    expect(lines).toContain('bar: followed in the same burst (no page read)');
+  });
+
+  it('leaves a bar alone without reading the page once the pen is down again', async () => {
+    const mark = el(straight({x: 70, y: 495}, {x: 73, y: 705}));
+    const {host, getPageElements} = watchedHost([el(letter(100, 600)), mark]);
+    let downs = 0;
+    host.penDownCount = () => downs;
+    host.getCurrentFilePath = async () => {
+      downs++; // the pen touches the screen while we look
+      return '/storage/emulated/0/Note/demo.note';
+    };
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'ignored', reason: 'kept writing after the bar'});
+    expect(getPageElements).not.toHaveBeenCalled();
+    expect(lines).toContain('bar: pen down again (no page read)');
+  });
+
+  it('stops a bar as soon as the pen is down again, before reading the writing', async () => {
+    const block = [100, 140, 180, 220].map(x => el(letter(x, 600)));
+    const outlines = block.map(b => jest.spyOn(b, 'outline'));
+    const mark = el(straight({x: 70, y: 495}, {x: 73, y: 705}));
+    const host = fakeHost([...block, mark]);
+    let downs = 0;
+    host.penDownCount = () => downs;
+    const read = host.getPageElements;
+    host.getPageElements = async (...args) => {
+      downs++; // during the save
+      return read(...args);
+    };
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'kept writing after the bar',
+    });
+    for (const outline of outlines) {
+      expect(outline).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('handlePenUp: fewer and parallel device calls', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  it('reads the points of every stroke of a burst at once, newest first', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>(r => (open = r));
+    const started: number[] = [];
+    const strokes = [0, 1, 2].map(i => {
+      const pts = letter(100, 300 + 100 * i);
+      return el(pts, {
+        outline: async () => {
+          started.push(i);
+          await gate;
+          return pts;
+        },
+      });
+    });
+
+    const outcome = handlePenUp(strokes, fakeHost([]), DEFAULT_CONFIG);
+    expect(started).toEqual([2, 1, 0]);
+    open();
+    expect(await outcome).toEqual({kind: 'ignored', reason: 'not a gesture'});
+  });
+
+  it('reads the page size once for a line, before the save', async () => {
+    const line = el(straight({x: 100, y: 800}, {x: 1000, y: 802}));
+    const host = fakeHost([el(word(100, 600)), line]);
+    const order: string[] = [];
+    const size = host.getPageSize;
+    host.getPageSize = (...args) => {
+      order.push('size');
+      return size(...args);
+    };
+    const read = host.getPageElements;
+    host.getPageElements = (...args) => {
+      order.push('read');
+      return read(...args);
+    };
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+    expect(order).toEqual(['size', 'read']);
+  });
+
+  it('reads the page size once for a loop, after the save', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+    const order: string[] = [];
+    const size = host.getPageSize;
+    host.getPageSize = (...args) => {
+      order.push('size');
+      return size(...args);
+    };
+    const read = host.getPageElements;
+    host.getPageElements = (...args) => {
+      order.push('read');
+      return read(...args);
+    };
+
+    expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+    expect(order).toEqual(['read', 'size']);
+  });
+
+  it('finds the gesture on the page by point counts, reading only its points', async () => {
+    // The stored copy is not a loop, so the flow stops before reading
+    // the other strokes for the selection.
+    const loopPoints = ellipse(520, 500, 200, 120);
+    const penUp = el(loopPoints, {uuid: 'from-pen-up', numInPage: 0});
+    const words = [100, 200, 300].map(y => {
+      const pts = word(100, y);
+      // As the device host: the count alone, without the points.
+      return el(pts, {pointCount: async () => pts.length});
+    });
+    const reads = words.map(w => jest.spyOn(w, 'outline'));
+    const counts = words.map(w => jest.spyOn(w, 'pointCount' as 'outline'));
+    const stored = el(straight({x: 100, y: 900}, {x: 900, y: 900}, 80), {
+      numInPage: 4,
+    });
+    const host = fakeHost([...words, stored]);
+
+    expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'failed',
+      reason: 'loop not recognised in page copy',
+    });
+    for (const read of reads) {
+      expect(read).not.toHaveBeenCalled();
+    }
+    for (const count of counts) {
+      expect(count).toHaveBeenCalled();
+    }
+  });
+
+  it('checks the erase with point counts, reading first points only for matching counts', async () => {
+    const letters = [100, 140, 180, 220].map(x => el(letter(x, 500)));
+    const words = [el(word(100, 800)), el(word(100, 900)), el(word(100, 1000))];
+    const firsts = words.map(w => jest.spyOn(w, 'firstPoint' as 'outline'));
+    const mark = el(
+      Array.from({length: 61}, (_, i) => ({
+        x: 10 + i,
+        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+      })),
+    );
+    const host = fakeHost([...letters, ...words, mark]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 4});
+    expect(lines).toContain('verify: 3 strokes sized, 0 first points read');
+    for (const first of firsts) {
+      expect(first).not.toHaveBeenCalled();
+    }
+    expect(host.calls).toEqual(['delete', 'reload']);
+  });
+
+  it('still verifies the erase on hosts that only read outlines', async () => {
+    const letters = [100, 140, 180, 220].map(x => plainEl(letter(x, 500)));
+    const mark = plainEl(
+      Array.from({length: 61}, (_, i) => ({
+        x: 10 + i,
+        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+      })),
+    );
+    const host = fakeHost([...letters, plainEl(word(100, 800)), mark]);
+    // The device "forgets" the deletion: the file keeps the strokes.
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      return true;
+    };
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 4,
+    });
+    expect(host.calls).toEqual(['delete', 'delete']); // found and retried
+  });
+
+  it('remembers the erased strokes after the screen is refreshed', async () => {
+    const letters = [100, 140, 180, 220].map(x => el(letter(x, 500)));
+    const mark = el(
+      Array.from({length: 61}, (_, i) => ({
+        x: 10 + i,
+        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+      })),
+    );
+    const host = fakeHost([...letters, mark]);
+    host.rememberErased = () => {
+      host.calls.push('remember');
+    };
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete', 'reload', 'remember']);
+  });
+});
+
+describe('outlinesOf', () => {
+  it('keeps at most 64 reads in flight, starting the next as each finishes', async () => {
+    let inFlight = 0;
+    let started = 0;
+    let most = 0;
+    const pending: (() => void)[] = [];
+    const elements = Array.from({length: 200}, (_, i) =>
+      el([], {
+        outline: () => {
+          started++;
+          most = Math.max(most, ++inFlight);
+          return new Promise<Pt[]>(resolve =>
+            pending.push(() => {
+              inFlight--;
+              resolve([{x: i, y: 0}]);
+            }),
+          );
+        },
+      }),
+    );
+
+    const result = outlinesOf(elements);
+    await flush();
+    expect(started).toBe(64);
+    pending.shift()!(); // one finishes: the next starts, no batch barrier
+    await flush();
+    expect(started).toBe(65);
+    while (pending.length > 0) {
+      pending.shift()!();
+      await flush();
+    }
+    const outlines = await result;
+    expect(most).toBe(64);
+    expect(outlines.map(o => o[0].x)).toEqual(elements.map((_, i) => i));
   });
 });

@@ -371,7 +371,9 @@ function isPointList(data: unknown, n: number): data is Pt[] {
  * Re-verify after any sn-plugin-lib or firmware upgrade.
  */
 export class DirectPointReader {
-  private strikes = 0;
+  // Bad results in a row, per call (a broken range read must not hide
+  // behind good size reads).
+  private strikes = {size: 0, range: 0};
   private off: string | null;
   private readonly ops = pointOps();
 
@@ -388,8 +390,8 @@ export class DirectPointReader {
     return this.off;
   }
 
-  private strike(reason: string): Direct<never> {
-    if (++this.strikes >= MAX_STRIKES) {
+  private strike(op: 'size' | 'range', reason: string): Direct<never> {
+    if (++this.strikes[op] >= MAX_STRIKES) {
       this.off = `turned off after ${MAX_STRIKES} bad results (${reason})`;
     }
     return {ok: false, reason};
@@ -424,15 +426,15 @@ export class DirectPointReader {
     try {
       n = await this.call(uuid, this.ops!.size, [], timings);
     } catch (e) {
-      return this.strike(`size threw: ${message(e)}`);
+      return this.strike('size', `size threw: ${message(e)}`);
     }
     if (n === null || n === undefined) {
       return {ok: false, reason: 'size: no result'};
     }
     if (typeof n !== 'number') {
-      return this.strike(`size gave a ${typeof n}`);
+      return this.strike('size', `size gave a ${typeof n}`);
     }
-    this.strikes = 0;
+    this.strikes.size = 0;
     // As the SDK: anything but a positive count reads as no points.
     return {ok: true, value: Number.isInteger(n) && n > 0 ? n : 0};
   }
@@ -450,19 +452,20 @@ export class DirectPointReader {
     try {
       data = await this.call(uuid, this.ops!.byIndex, [0, n - 1], timings);
     } catch (e) {
-      return this.strike(`points threw: ${message(e)}`);
+      return this.strike('range', `points threw: ${message(e)}`);
     }
     if (data === null || data === undefined) {
       return {ok: false, reason: 'points: no result'};
     }
     if (!isPointList(data, n)) {
       return this.strike(
+        'range',
         `points: ${
           Array.isArray(data) ? `${data.length} of ${n}` : typeof data
         }`,
       );
     }
-    this.strikes = 0;
+    this.strikes.range = 0;
     return {ok: true, value: data};
   }
 }
@@ -575,6 +578,8 @@ export function createHost(
   // Strokes removed by the last margin-wave erase, kept in the native cache so
   // insertPageElements can put them back.
   let erased: ErasedStrokes | null = null;
+  // The erase being restored: still needed by insertPageElements.
+  let restoring: ErasedStrokes | null = null;
 
   let trace: Trace = () => {};
   let timings = new Timings();
@@ -660,6 +665,8 @@ export function createHost(
       }
     };
 
+    // Whether the count came from the accessor (which then has it).
+    let countedByAccessor = false;
     const readCount = async (): Promise<number> => {
       touch();
       const direct = await reader.count(e.uuid, timings);
@@ -667,6 +674,7 @@ export function createHost(
         notePointsPath(null);
         return direct.value;
       }
+      countedByAccessor = true;
       notePointsPath(direct.reason);
       return Math.max(
         0,
@@ -692,7 +700,14 @@ export function createHost(
         return direct.value;
       }
       notePointsPath(direct.reason);
-      return readAll(accessor, timings);
+      // The accessor's own read: its size, then the range (its size is
+      // already known when it gave the count).
+      return countedByAccessor
+        ? timings.pointCall(
+            () => accessor.getRange(0, n),
+            items => items?.length ?? 0,
+          )
+        : readAll(accessor, timings);
     };
 
     const readFirst = async (): Promise<Pt | undefined> => {
@@ -854,7 +869,9 @@ export function createHost(
       }
       // Taken now, so a second tap meanwhile finds nothing to restore.
       erased = null;
+      restoring = target;
       const putBack = () => {
+        restoring = null;
         if (erased === null) {
           erased = target;
         } else {
@@ -874,6 +891,7 @@ export function createHost(
         putBack();
         return 'Could not restore the erased strokes.';
       }
+      restoring = null;
       recycleAll(elements);
       return `Restored ${elements.length} strokes on page ${page + 1}.`;
     },
@@ -931,8 +949,8 @@ export function createHost(
       const old = fetched;
       fetched = [];
       const keep = new Set<string>(pendingUuids);
-      if (erased) {
-        for (const e of erased.elements) {
+      for (const kept of [erased, restoring]) {
+        for (const e of kept?.elements ?? []) {
           keep.add(e.uuid);
         }
       }
