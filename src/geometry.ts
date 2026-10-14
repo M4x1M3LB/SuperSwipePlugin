@@ -208,3 +208,121 @@ export function padAndClamp(
     bottom: Math.min(page.height, Math.ceil(box.bottom + pad)),
   };
 }
+
+export interface LineOptions {
+  /** Minimum number of sample points. */
+  minPoints: number;
+  /** Minimum distance between the two ends, in px. */
+  minLength: number;
+  /** Max path length divided by the end-to-end distance. */
+  maxPathRatio: number;
+  /** Max distance of any point from the end-to-end chord, in px... */
+  maxDeviationPx: number;
+  /** ...or as a fraction of the chord length, whichever is larger. */
+  maxDeviationRatio: number;
+}
+
+export const DEFAULT_LINE_OPTIONS: LineOptions = {
+  minPoints: 6,
+  minLength: 100,
+  maxPathRatio: 1.15,
+  maxDeviationPx: 12,
+  maxDeviationRatio: 0.05,
+};
+
+export interface Segment {
+  a: Pt;
+  b: Pt;
+}
+
+/** Signed perpendicular distance from `p` to the infinite line through a, b. */
+function signedDistance(p: Pt, {a, b}: Segment): number {
+  const len = distance(a, b);
+  return ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
+}
+
+/** Keep only points at least `step` px from the previously kept one. */
+function thin(points: Pt[], step: number): Pt[] {
+  const kept = [points[0]];
+  for (const p of points) {
+    if (distance(kept[kept.length - 1], p) >= step) {
+      kept.push(p);
+    }
+  }
+  kept.push(points[points.length - 1]);
+  return kept;
+}
+
+/** Return the stroke's end-to-end segment if it is a straight line. */
+export function findStraightLine(
+  points: Pt[],
+  options: LineOptions = DEFAULT_LINE_OPTIONS,
+): Segment | null {
+  if (points.length < options.minPoints) {
+    return null;
+  }
+  const line = {a: points[0], b: points[points.length - 1]};
+  const chord = distance(line.a, line.b);
+  if (chord < options.minLength) {
+    return null;
+  }
+  // Measure on thinned points so dense pen sampling plus hand jitter does not
+  // inflate the length of an otherwise straight stroke.
+  if (pathLength(thin(points, 10)) / chord > options.maxPathRatio) {
+    return null;
+  }
+  const maxDeviation = Math.max(
+    options.maxDeviationPx,
+    options.maxDeviationRatio * chord,
+  );
+  for (const p of points) {
+    if (Math.abs(signedDistance(p, line)) > maxDeviation) {
+      return null;
+    }
+  }
+  return line;
+}
+
+function cross(o: Pt, a: Pt, b: Pt): number {
+  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+}
+
+export function segmentsIntersect(p1: Pt, p2: Pt, q1: Pt, q2: Pt): boolean {
+  const d1 = cross(q1, q2, p1);
+  const d2 = cross(q1, q2, p2);
+  const d3 = cross(p1, p2, q1);
+  const d4 = cross(p1, p2, q2);
+  return (
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  );
+}
+
+/**
+ * Does `line` cut through the stroke? The line must cross the stroke's path,
+ * and at least `minCutRatio` of the stroke's extent (measured across the
+ * line) must lie on each side. That way an underline that only clips the
+ * tails of "g", "y" or "p" does not count.
+ */
+export function lineCutsStroke(
+  stroke: Pt[],
+  line: Segment,
+  minCutRatio: number,
+): boolean {
+  let crosses = false;
+  for (let i = 1; i < stroke.length && !crosses; i++) {
+    crosses = segmentsIntersect(stroke[i - 1], stroke[i], line.a, line.b);
+  }
+  if (!crosses) {
+    return false;
+  }
+  let above = 0;
+  let below = 0;
+  for (const p of stroke) {
+    const d = signedDistance(p, line);
+    above = Math.max(above, d);
+    below = Math.max(below, -d);
+  }
+  const extent = above + below;
+  return extent > 0 && Math.min(above, below) >= minCutRatio * extent;
+}

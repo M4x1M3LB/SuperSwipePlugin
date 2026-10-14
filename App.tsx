@@ -8,6 +8,8 @@ import React, {useEffect, useState} from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
 import {ensureFileAccess} from './src/host';
+import {restoreLastErase} from './src/plugin';
+import type {Gestures} from './src/selector';
 import {describeOutcome, status} from './src/status';
 
 function useStatus() {
@@ -16,15 +18,32 @@ function useStatus() {
   return status;
 }
 
+function Toggle(props: {label: string; name: keyof Gestures}) {
+  const on = status.gestures()[props.name];
+  return (
+    <Pressable
+      style={[styles.button, on && styles.buttonOn]}
+      onPress={() => status.setGesture(props.name, !on)}>
+      <Text style={[styles.buttonText, on && styles.buttonTextOn]}>
+        {props.label}: {on ? 'ON' : 'OFF'}
+      </Text>
+    </Pressable>
+  );
+}
+
 function App(): React.JSX.Element {
   const s = useStatus();
-  const [access, setAccess] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   const requestAccess = async () => {
     const granted = await ensureFileAccess();
-    setAccess(
+    setMessage(
       granted ? 'File access granted.' : 'File access was not granted.',
     );
+  };
+
+  const restore = async () => {
+    setMessage(await restoreLastErase());
   };
 
   return (
@@ -37,27 +56,28 @@ function App(): React.JSX.Element {
 
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
-        Draw a closed loop around strokes with a pen (not the marker). The loop
-        disappears and what it enclosed is lasso-selected.
+        With a pen (not the marker): draw a closed loop around strokes to
+        lasso-select them, or a straight line through 3 or more strokes to erase
+        them.
       </Text>
 
-      <Pressable
-        style={[styles.button, s.isEnabled() && styles.buttonOn]}
-        onPress={() => s.setEnabled(!s.isEnabled())}>
-        <Text style={[styles.buttonText, s.isEnabled() && styles.buttonTextOn]}>
-          Loop to select: {s.isEnabled() ? 'ON' : 'OFF'}
-        </Text>
-      </Pressable>
+      <Toggle label="Loop to select" name="loopSelect" />
+      <Toggle label="Line to erase" name="lineErase" />
 
-      <Pressable style={styles.button} onPress={requestAccess}>
-        <Text style={styles.buttonText}>Grant file access</Text>
-      </Pressable>
-      {access && <Text style={styles.body}>{access}</Text>}
+      <View style={styles.row}>
+        <Pressable style={styles.button} onPress={restore}>
+          <Text style={styles.buttonText}>Restore last erase</Text>
+        </Pressable>
+        <Pressable style={styles.button} onPress={requestAccess}>
+          <Text style={styles.buttonText}>Grant file access</Text>
+        </Pressable>
+      </View>
+      {message && <Text style={styles.body}>{message}</Text>}
 
       <Text style={styles.status}>{describeOutcome(s.lastOutcome())}</Text>
       <Text style={styles.note}>
-        Note: removing the loop clears the page's undo history (Supernote
-        limitation).
+        Note: gestures clear the page's undo history (Supernote limitation). Use
+        Restore last erase to undo an erase.
       </Text>
     </View>
   );
@@ -97,6 +117,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     marginBottom: 16,
     alignSelf: 'flex-start',
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 16,
   },
   buttonOn: {
     backgroundColor: '#000000',

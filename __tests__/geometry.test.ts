@@ -1,6 +1,8 @@
 import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
+  findStraightLine,
+  lineCutsStroke,
   fractionInside,
   padAndClamp,
   pointInPolygon,
@@ -123,5 +125,70 @@ describe('polygon helpers', () => {
         {left: 5, top: 15, right: 30, bottom: 18},
       ]),
     ).toEqual({left: 5, top: 10, right: 30, bottom: 20});
+  });
+});
+
+describe('findStraightLine', () => {
+  it('accepts a slightly wobbly straight stroke', () => {
+    const pts = line({x: 100, y: 500}, {x: 500, y: 520}).map((p, i) => ({
+      x: p.x,
+      y: p.y + (i % 2 ? 2 : -2),
+    }));
+    expect(findStraightLine(pts)).toEqual({a: pts[0], b: pts[pts.length - 1]});
+  });
+
+  it('accepts vertical and diagonal lines', () => {
+    expect(
+      findStraightLine(line({x: 300, y: 100}, {x: 300, y: 600})),
+    ).not.toBeNull();
+    expect(
+      findStraightLine(line({x: 100, y: 100}, {x: 400, y: 400})),
+    ).not.toBeNull();
+  });
+
+  it('accepts a densely sampled line with jitter', () => {
+    const pts = line({x: 100, y: 500}, {x: 500, y: 500}, 400).map((p, i) => ({
+      x: p.x,
+      y: p.y + (i % 2 ? 1.5 : -1.5),
+    }));
+    expect(findStraightLine(pts)).not.toBeNull();
+  });
+
+  it('rejects short strokes', () => {
+    expect(
+      findStraightLine(line({x: 100, y: 100}, {x: 160, y: 100})),
+    ).toBeNull();
+  });
+
+  it('rejects curves and corners', () => {
+    expect(findStraightLine(ellipse(500, 500, 200, 120, 0.4))).toBeNull();
+    const corner = [
+      ...line({x: 100, y: 100}, {x: 400, y: 100}),
+      ...line({x: 400, y: 100}, {x: 400, y: 400}),
+    ];
+    expect(findStraightLine(corner)).toBeNull();
+  });
+});
+
+describe('lineCutsStroke', () => {
+  const strike = {a: {x: 0, y: 120}, b: {x: 1000, y: 120}};
+  // A letter-like zig-zag from y=100 to y=140.
+  const letter: Pt[] = [0, 1, 2, 3, 4].map(i => ({
+    x: 200 + i * 6,
+    y: i % 2 ? 140 : 100,
+  }));
+
+  it('counts a line through the middle of a stroke', () => {
+    expect(lineCutsStroke(letter, strike, 0.2)).toBe(true);
+  });
+
+  it('ignores a line that only clips the bottom of a stroke', () => {
+    const underline = {a: {x: 0, y: 137}, b: {x: 1000, y: 137}};
+    expect(lineCutsStroke(letter, underline, 0.2)).toBe(false);
+  });
+
+  it('ignores strokes the line does not reach', () => {
+    const short = {a: {x: 0, y: 120}, b: {x: 150, y: 120}};
+    expect(lineCutsStroke(letter, short, 0.2)).toBe(false);
   });
 });

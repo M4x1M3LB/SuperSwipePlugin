@@ -139,9 +139,12 @@ async function outlineOf(e: Element): Promise<Pt[]> {
   return contours.flat();
 }
 
+/** The SDK element behind each PageElement, for write calls and recycling. */
+const rawElements = new WeakMap<PageElement, Element>();
+
 export function toPageElement(e: Element): PageElement {
   let cached: Promise<Pt[]> | null = null;
-  return {
+  const wrapped: PageElement = {
     uuid: e.uuid,
     type: e.type,
     numInPage: e.numInPage,
@@ -150,6 +153,14 @@ export function toPageElement(e: Element): PageElement {
     penType: e.stroke ? e.stroke.penType : null,
     outline: () => (cached ??= outlineOf(e).catch(() => [])),
   };
+  rawElements.set(wrapped, e);
+  return wrapped;
+}
+
+function recycleAll(elements: Element[]): void {
+  for (const e of elements) {
+    e.recycle().catch(() => {});
+  }
 }
 
 /** Make sure FILE:READ and FILE:WRITE are granted, asking the user if needed. */
@@ -160,7 +171,7 @@ export async function ensureFileAccess(): Promise<boolean> {
     }
     const choice = await PluginManager.requestPermission(
       permission,
-      'SuperSwipe needs file access to remove the loop you drew and select what it encloses.',
+      'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses and erase what a line crosses.',
     );
     if (choice !== 1 && choice !== 2) {
       return false;
@@ -169,8 +180,35 @@ export async function ensureFileAccess(): Promise<boolean> {
   return true;
 }
 
-export function createHost(pen: PenTracker): Host {
+interface ErasedStrokes {
+  path: string;
+  page: number;
+  layer: number;
+  elements: Element[];
+}
+
+export interface DeviceHost extends Host {
+  /** Wrap SDK elements so they are tracked and released with the others. */
+  wrap(elements: Element[]): PageElement[];
+  /** Put the strokes from the last line-erase back. Returns a message. */
+  restoreLastErase(): Promise<string>;
+}
+
+export function createHost(pen: PenTracker): DeviceHost {
+  // Elements read while handling the current stroke; freed in release().
+  let fetched: Element[] = [];
+  // Strokes removed by the last line-erase, kept in the native cache so
+  // insertPageElements can put them back.
+  let erased: ErasedStrokes | null = null;
+
+  const wrap = (elements: Element[]) => {
+    fetched.push(...elements);
+    return elements.map(toPageElement);
+  };
+
   return {
+    wrap,
+
     async getCurrentFilePath() {
       return resultOf<string>(await PluginCommAPI.getCurrentFilePath());
     },
@@ -189,7 +227,7 @@ export function createHost(pen: PenTracker): Host {
       const elements = resultOf<Element[]>(
         await PluginFileAPI.getElements(page, path),
       );
-      return (elements ?? []).map(toPageElement);
+      return wrap(elements ?? []);
     },
 
     ensureFileAccess,
@@ -206,6 +244,34 @@ export function createHost(pen: PenTracker): Host {
       );
     },
 
+    rememberErased(path, page, layer, elements) {
+      if (erased) {
+        recycleAll(erased.elements);
+      }
+      const raw = elements
+        .map(e => rawElements.get(e))
+        .filter((e): e is Element => e !== undefined);
+      erased = {path, page, layer, elements: raw};
+    },
+
+    async restoreLastErase() {
+      if (!erased) {
+        return 'Nothing to restore.';
+      }
+      if ((await this.getCurrentFilePath()) !== erased.path) {
+        return 'Open the note the strokes were erased from, then try again.';
+      }
+      const {page, layer, elements} = erased;
+      const res = await PluginCommAPI.insertPageElements(elements, page, layer);
+      if (resultOf<boolean>(res) !== true) {
+        return 'Could not restore the erased strokes.';
+      }
+      recycleAll(elements);
+      erased = null;
+      await this.refreshPage();
+      return `Restored ${elements.length} strokes on page ${page + 1}.`;
+    },
+
     async lassoRect(rect: Box) {
       return (
         resultOf<boolean>(await PluginCommAPI.lassoElements(rect)) === true
@@ -218,7 +284,9 @@ export function createHost(pen: PenTracker): Host {
     },
 
     release() {
-      PluginCommAPI.clearElementCache();
+      const keep = new Set(erased?.elements);
+      recycleAll(fetched.filter(e => !keep.has(e)));
+      fetched = [];
     },
   };
 }

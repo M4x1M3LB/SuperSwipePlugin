@@ -1,7 +1,21 @@
-import {DEFAULT_LOOP_OPTIONS, type LoopOptions} from './geometry';
+import {
+  DEFAULT_LINE_OPTIONS,
+  DEFAULT_LOOP_OPTIONS,
+  type LineOptions,
+  type LoopOptions,
+} from './geometry';
 
 export interface SelectorConfig {
   loop: LoopOptions;
+  line: LineOptions;
+  /** A straight line erases only when it cuts through at least this many strokes. */
+  eraseMinCrossed: number;
+  /**
+   * Fraction of a stroke's extent (across the line) that must lie on each
+   * side of the line for it to count as cut through. Protects underlines
+   * that clip descenders.
+   */
+  eraseMinCutRatio: number;
   /**
    * Pen types whose strokes may trigger a selection. The SDK documents
    * 10 (fineliner/technical), 16 (pressure), 15 (calligraphy); 1 is an older
@@ -23,6 +37,9 @@ export interface SelectorConfig {
 
 export const DEFAULT_CONFIG: SelectorConfig = {
   loop: DEFAULT_LOOP_OPTIONS,
+  line: DEFAULT_LINE_OPTIONS,
+  eraseMinCrossed: 3,
+  eraseMinCutRatio: 0.2,
   triggerPenTypes: [1, 10, 15, 16],
   minInsideFraction: 0.85,
   lassoPadding: 4,

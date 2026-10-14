@@ -1,4 +1,4 @@
-import type {Outcome} from './selector';
+import type {Gestures, Outcome} from './selector';
 
 /**
  * In-memory plugin state shared between the background listener and the
@@ -6,7 +6,7 @@ import type {Outcome} from './selector';
  */
 type Listener = () => void;
 
-let enabled = true;
+let gestures: Gestures = {loopSelect: true, lineErase: true};
 let lastOutcome: Outcome | null = null;
 const listeners = new Set<Listener>();
 
@@ -15,9 +15,9 @@ function notify() {
 }
 
 export const status = {
-  isEnabled: () => enabled,
-  setEnabled(value: boolean) {
-    enabled = value;
+  gestures: (): Gestures => gestures,
+  setGesture(name: keyof Gestures, on: boolean) {
+    gestures = {...gestures, [name]: on};
     notify();
   },
   lastOutcome: () => lastOutcome,
@@ -31,18 +31,22 @@ export const status = {
   },
 };
 
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
 export function describeOutcome(outcome: Outcome | null): string {
   if (!outcome) {
-    return 'No loop drawn yet.';
+    return 'No gesture drawn yet.';
   }
   switch (outcome.kind) {
     case 'selected':
-      return `Selected ${outcome.count} element${
-        outcome.count === 1 ? '' : 's'
-      }.`;
+      return `Selected ${plural(outcome.count, 'element')}.`;
+    case 'erased':
+      return `Erased ${plural(outcome.count, 'stroke')}.`;
     case 'ignored':
-      return `Last stroke ignored: ${outcome.reason}.`;
+      return `Last stroke left as ink: ${outcome.reason}.`;
     case 'failed':
-      return `Last loop failed: ${outcome.reason}.`;
+      return `Last gesture failed: ${outcome.reason}.`;
   }
 }

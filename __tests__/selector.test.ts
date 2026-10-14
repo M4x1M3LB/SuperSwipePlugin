@@ -14,6 +14,22 @@ function ellipse(cx: number, cy: number, rx: number, ry: number, n = 80): Pt[] {
   });
 }
 
+/** A handwritten letter: a zig-zag 30 px wide and 40 px tall. */
+function letter(x: number, y: number): Pt[] {
+  return [0, 1, 2, 3, 4, 5, 6].map(i => ({
+    x: x + i * 5,
+    y: y + (i % 2 === 0 ? 0 : 40),
+  }));
+}
+
+/** A straight pen line with a little hand wobble. */
+function straight(from: Pt, to: Pt, n = 30): Pt[] {
+  return Array.from({length: n + 1}, (_, i) => ({
+    x: from.x + ((to.x - from.x) * i) / n,
+    y: from.y + ((to.y - from.y) * i) / n + (i % 3) - 1,
+  }));
+}
+
 /** A short horizontal "word" stroke. */
 function word(x: number, y: number, width = 80): Pt[] {
   return Array.from({length: 20}, (_, i) => ({
@@ -41,6 +57,7 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   refreshed: number;
+  remembered: PageElement[][];
 }
 
 function fakeHost(
@@ -51,6 +68,7 @@ function fakeHost(
     deleted: [],
     lassoed: [],
     refreshed: 0,
+    remembered: [],
     getCurrentFilePath: async () => '/storage/emulated/0/Note/demo.note',
     getCurrentPageNum: async () => 3,
     getPageSize: async () => ({width: 1404, height: 1872}),
@@ -60,6 +78,9 @@ function fakeHost(
     deleteElements: async nums => {
       host.deleted.push(nums);
       return true;
+    },
+    rememberErased: (_path, _page, _layer, elements) => {
+      host.remembered.push(elements);
     },
     lassoRect: async rect => {
       host.lassoed.push(rect);
@@ -108,7 +129,11 @@ describe('handlePenUp', () => {
   });
 
   it('ignores open strokes without touching the page', async () => {
-    const stroke = el(word(100, 100, 600));
+    const arc = Array.from({length: 40}, (_, i) => ({
+      x: 500 + 200 * Math.cos((i / 39) * Math.PI),
+      y: 500 + 200 * Math.sin((i / 39) * Math.PI),
+    }));
+    const stroke = el(arc);
     const getPageElements = jest.fn(async () => [stroke]);
     const host = fakeHost([], {getPageElements});
 
@@ -192,7 +217,13 @@ describe('handlePenUp', () => {
     const loop = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([el(word(480, 500)), loop]);
 
-    const outcome = await handlePenUp([loop], host, DEFAULT_CONFIG, () => true);
+    const outcome = await handlePenUp(
+      [loop],
+      host,
+      DEFAULT_CONFIG,
+      {loopSelect: true, lineErase: true},
+      () => true,
+    );
 
     expect(outcome).toMatchObject({kind: 'ignored'});
     expect(host.deleted).toEqual([]);
@@ -225,6 +256,84 @@ describe('handlePenUp', () => {
       kind: 'failed',
     });
     expect(host.refreshed).toBe(1);
+  });
+});
+
+describe('handlePenUp: line to erase', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  /** Four letters side by side, 40 px apart, top at y=500. */
+  function row(): PageElement[] {
+    return [100, 140, 180, 220].map(x => el(letter(x, 500)));
+  }
+
+  it('erases the strokes a line cuts through, and the line', async () => {
+    const letters = row();
+    const other = el(letter(100, 800));
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const host = fakeHost([...letters, other, line]);
+
+    const outcome = await handlePenUp([line], host, DEFAULT_CONFIG);
+
+    expect(outcome).toEqual({kind: 'erased', count: 4});
+    expect(host.deleted).toEqual([
+      [...letters.map(e => e.numInPage), line.numInPage],
+    ]);
+    expect(host.remembered).toEqual([letters]);
+    expect(host.refreshed).toBe(1);
+  });
+
+  it('leaves the line as ink when it cuts fewer than 3 strokes', async () => {
+    const letters = row().slice(0, 2);
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const host = fakeHost([...letters, line]);
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'line cuts 2 strokes',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('does not erase on an underline that clips the letters', async () => {
+    const letters = row();
+    const underline = el(straight({x: 80, y: 537}, {x: 280, y: 537}));
+    const host = fakeHost([...letters, underline]);
+
+    expect(await handlePenUp([underline], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('only erases strokes, not text boxes or pictures', async () => {
+    const letters = row().slice(0, 2);
+    const textBox = el(letter(260, 500), {type: 500, penType: null});
+    const line = el(straight({x: 80, y: 520}, {x: 320, y: 520}));
+    const host = fakeHost([...letters, textBox, line]);
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+    });
+  });
+
+  it('respects the per-gesture switches', async () => {
+    const line = el(straight({x: 80, y: 520}, {x: 280, y: 520}));
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([...row(), line, loop]);
+    const off = {loopSelect: false, lineErase: false};
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG, off)).toEqual({
+      kind: 'ignored',
+      reason: 'not a gesture',
+    });
+    expect(await handlePenUp([loop], host, DEFAULT_CONFIG, off)).toEqual({
+      kind: 'ignored',
+      reason: 'not a gesture',
+    });
+    expect(host.deleted).toEqual([]);
   });
 });
 

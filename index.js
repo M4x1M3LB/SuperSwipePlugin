@@ -7,7 +7,7 @@ import App from './App';
 import {name as appName} from './app.json';
 
 import {PluginManager} from 'sn-plugin-lib';
-import {startLoopSelect} from './src/plugin';
+import {startGestures} from './src/plugin';
 
 AppRegistry.registerComponent(appName, () => App);
 
@@ -29,4 +29,4 @@ PluginManager.registerButton(1, ['NOTE'], {
   showType: 1,
 });
 
-startLoopSelect();
+startGestures();
