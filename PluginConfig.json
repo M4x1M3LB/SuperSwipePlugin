@@ -1,0 +1,14 @@
+{
+  "name": "SuperSwipe",
+  "desc": "Draw a closed loop around strokes with a pen: the loop disappears and what it enclosed is lasso-selected.",
+  "iconPath": "assets/icon.png",
+  "versionName": "0.0.1",
+  "versionCode": "1",
+  "pluginID": "nkq4x2u5m7xt50fr",
+  "pluginKey": "SuperSwipe",
+  "jsMainPath": "index",
+  "uses-permissions": [
+    "plugin.permission.FILE:READ",
+    "plugin.permission.FILE:WRITE"
+  ]
+}
