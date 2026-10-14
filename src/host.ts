@@ -365,7 +365,8 @@ function isPointList(data: unknown, n: number): data is Pt[] {
  * read-only calls the SDK's accessor makes (list size, then a range), without
  * its per-point cache and checks. Not documented, so every result is checked
  * and anything unexpected falls back to the accessor; after MAX_STRIKES bad
- * results in a row it is turned off. A null result (the stroke is no longer
+ * results in a row it is turned off (a good result of the same call resets
+ * its count; the off switch lasts for the session). A null result (the stroke is no longer
  * cached natively) falls back without counting against it.
  *
  * Re-verify after any sn-plugin-lib or firmware upgrade.
@@ -667,6 +668,8 @@ export function createHost(
 
     // Whether the count came from the accessor (which then has it).
     let countedByAccessor = false;
+    // The accessor's size threw: the count is unknown, not zero.
+    let countFailed = false;
     const readCount = async (): Promise<number> => {
       touch();
       const direct = await reader.count(e.uuid, timings);
@@ -692,7 +695,8 @@ export function createHost(
       }
       const n = await pointCount();
       if (n === 0) {
-        return [];
+        // An unknown count gets the accessor's full read (it asks again).
+        return countFailed ? readAll(accessor, timings) : [];
       }
       const direct = await reader.range(e.uuid, n, timings);
       if (direct.ok) {
@@ -727,7 +731,11 @@ export function createHost(
 
     const pointCount = (): Promise<number> =>
       (count ??= accessor
-        ? readCount().catch(() => 0)
+        ? readCount().catch(() => {
+            countFailed = true;
+            countedByAccessor = false;
+            return 0;
+          })
         : getOutline().then(pts => pts.length));
     const getOutline = (): Promise<Pt[]> =>
       (outline ??= readOutline().catch(() => []));
@@ -878,22 +886,28 @@ export function createHost(
           recycleAll(target.elements); // a newer erase replaced it
         }
       };
-      if ((await this.getCurrentFilePath()) !== target.path) {
-        putBack();
-        return 'Open the note the strokes were erased from, then try again.';
+      let done = false;
+      try {
+        if ((await this.getCurrentFilePath()) !== target.path) {
+          return 'Open the note the strokes were erased from, then try again.';
+        }
+        const {page, layer, elements} = target;
+        const ok = await call<boolean>('insertPageElements', () =>
+          PluginCommAPI.insertPageElements(elements, page, layer),
+        );
+        if (ok !== true) {
+          fileCallFailed('insertPageElements');
+          return 'Could not restore the erased strokes.';
+        }
+        done = true;
+        restoring = null;
+        recycleAll(elements);
+        return `Restored ${elements.length} strokes on page ${page + 1}.`;
+      } finally {
+        if (!done) {
+          putBack(); // also on a throw: the strokes stay restorable
+        }
       }
-      const {page, layer, elements} = target;
-      const ok = await call<boolean>('insertPageElements', () =>
-        PluginCommAPI.insertPageElements(elements, page, layer),
-      );
-      if (ok !== true) {
-        fileCallFailed('insertPageElements');
-        putBack();
-        return 'Could not restore the erased strokes.';
-      }
-      restoring = null;
-      recycleAll(elements);
-      return `Restored ${elements.length} strokes on page ${page + 1}.`;
     },
 
     async reloadIfQuiet() {

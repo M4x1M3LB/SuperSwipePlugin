@@ -132,6 +132,17 @@ describe('release', () => {
     expect(mockRecycle.mock.calls).toEqual([['a']]);
   });
 
+  it('keeps the erase when reading the file path throws', async () => {
+    mockCurrentPath.mockRejectedValueOnce(new Error('native'));
+    mockInsert.mockResolvedValue(ok(true));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const [a] = host.wrap(strokes('a'));
+    host.rememberErased('/n.note', 0, 0, [a]);
+    await host.restoreLastErase().catch(() => {});
+    mockCurrentPath.mockResolvedValue(ok('/n.note'));
+    expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+  });
+
   it('keeps the erase when the restore fails', async () => {
     mockCurrentPath.mockResolvedValue(ok('/n.note'));
     mockInsert.mockResolvedValue({
@@ -330,6 +341,52 @@ describe('direct point reads', () => {
     const [stroke] = host.wrap([element]);
     expect(await stroke.outline()).toEqual(pts);
     expect(accessor.getRange).not.toHaveBeenCalled();
+  });
+
+  it('counts once with the accessor, then reads exactly that range', async () => {
+    for (const pointApi of [null, api(() => null)]) {
+      const host = createHost(new PenTracker(), {pointApi});
+      const {element, accessor} = sdkStroke('a', pts);
+      const [stroke] = host.wrap([element]);
+      expect(await stroke.outline()).toEqual(pts);
+      expect(accessor.size).toHaveBeenCalledTimes(1);
+      expect(accessor.getRange).toHaveBeenCalledTimes(1);
+      expect(accessor.getRange).toHaveBeenCalledWith(0, 3);
+    }
+  });
+
+  it('asks the accessor again when its size threw', async () => {
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const {element, accessor} = sdkStroke('a', pts);
+    accessor.size.mockRejectedValueOnce(new Error('boom'));
+    const [stroke] = host.wrap([element]);
+    expect(await stroke.outline()).toEqual(pts);
+    expect(accessor.size).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps range strikes across good sizes, but a good range resets them', async () => {
+    const timings = new Timings();
+    let badRange = true;
+    const reader = new DirectPointReader(
+      api((op, index) =>
+        op === 0
+          ? 3
+          : badRange
+          ? [{x: 1, y: 2}]
+          : pts.slice(index[0], index[1] + 1),
+      ),
+    );
+    await reader.range('a', 3, timings);
+    await reader.count('a', timings); // a good size does not clear it
+    await reader.range('a', 3, timings);
+    badRange = false;
+    expect(await reader.range('a', 3, timings)).toMatchObject({ok: true});
+    badRange = true;
+    await reader.range('a', 3, timings);
+    await reader.range('a', 3, timings);
+    expect(reader.disabledReason()).toBeNull(); // never 3 in a row
+    await reader.range('a', 3, timings);
+    expect(reader.disabledReason()).toContain('turned off');
   });
 
   it('turns itself off after 3 bad results in a row', async () => {
