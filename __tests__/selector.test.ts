@@ -278,21 +278,54 @@ describe('handlePenUp: device quirks', () => {
     expect(host.deleted).toEqual([[9]]);
   });
 
-  it('matches the saved stroke even if its point list differs slightly', async () => {
-    const points = ellipse(520, 500, 200, 120);
+  it('finds the saved stroke when its coordinates differ from the pen-up copy', async () => {
+    const pagePoints = ellipse(520, 500, 200, 120);
+    // Pen-up copy in another coordinate system (rotated and scaled, like EMR).
+    const penUpPoints = pagePoints.map(p => ({
+      x: 20000 - p.y * 11,
+      y: p.x * 11,
+    }));
+    const penUp = el(penUpPoints, {uuid: 'pen-up', numInPage: 0});
+    const olderSameCount = el(ellipse(100, 1500, 60, 60), {numInPage: 2});
+    const stored = el(pagePoints, {numInPage: 7});
+    const host = fakeHost([olderSameCount, el(word(480, 500)), stored]);
+
+    expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 1,
+    });
+    // Newest stroke with the same point count, and selection computed from
+    // the page copy's coordinates.
+    expect(host.deleted).toEqual([[7]]);
+    expect(host.lassoed[0].left).toBeGreaterThan(400);
+  });
+
+  it('accepts a saved copy with a few points more or less', async () => {
+    const points = ellipse(520, 500, 200, 120, 100);
     const penUp = el(points, {uuid: 'pen-up', numInPage: 0});
-    const saved = [
-      points[0],
-      ...points.slice(1, -1).filter((_, i) => i % 2 === 0),
-      {x: points[points.length - 1].x + 0.8, y: points[points.length - 1].y},
-    ];
-    const stored = el(saved, {numInPage: 4});
+    const stored = el(points.slice(0, -3), {numInPage: 4});
     const host = fakeHost([el(word(480, 500)), stored]);
 
     expect(await handlePenUp([penUp], host, DEFAULT_CONFIG)).toMatchObject({
       kind: 'selected',
     });
     expect(host.deleted).toEqual([[4]]);
+  });
+
+  it('explains in the trace when the saved stroke is missing', async () => {
+    const penUp = el(ellipse(520, 500, 200, 120), {
+      uuid: 'pen-up',
+      numInPage: 0,
+    });
+    const host = fakeHost([el(word(480, 500), {numInPage: 3})]);
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([penUp], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({kind: 'failed'});
+    expect(lines.join('\n')).toContain('newest: #3:20');
   });
 
   it('traces each step', async () => {

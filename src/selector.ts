@@ -161,17 +161,44 @@ export async function handlePenUp(
 
   const elements = await host.getPageElements(path, page);
   trace(`page elements: ${elements.length}`);
-  const stroke = await findStoredStroke(elements, gesture, points);
+  const stroke = await findStoredStroke(
+    elements,
+    gesture,
+    points.length,
+    trace,
+  );
   if (!stroke) {
     return {kind: 'failed', reason: 'gesture stroke not found on page'};
   }
-  trace(`gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}`);
+  // The pen-up copy and the page copy of a stroke are not guaranteed to use
+  // the same coordinates, so work from the page copy, like everything else.
+  const stored = await stroke.outline();
+  trace(
+    `gesture stroke: #${stroke.numInPage}, layer ${stroke.layerNum}, ` +
+      `${stored.length} points; first point pen-up ${fmt(points[0])}, ` +
+      `page ${fmt(stored[0])}`,
+  );
   const others = elements.filter(
     e => e !== stroke && e.layerNum === stroke.layerNum,
   );
 
   const ctx = {host, config, path, page, stroke, others, isCancelled, trace};
-  return polygon ? selectInLoop(ctx, polygon) : eraseAlongLine(ctx, line!);
+  if (polygon) {
+    const pagePolygon = findClosedLoop(stored, config.loop);
+    if (!pagePolygon) {
+      return {kind: 'failed', reason: 'loop not recognised in page copy'};
+    }
+    return selectInLoop(ctx, pagePolygon);
+  }
+  const pageLine = findStraightLine(stored, config.line);
+  if (!pageLine) {
+    return {kind: 'failed', reason: 'line not recognised in page copy'};
+  }
+  return eraseAlongLine(ctx, pageLine);
+}
+
+function fmt(p: Pt | undefined): string {
+  return p ? `(${Math.round(p.x)}, ${Math.round(p.y)})` : '(none)';
 }
 
 async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
@@ -266,15 +293,23 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   return null;
 }
 
+/** How many of the newest page strokes to consider as the gesture. */
+const RECENT_STROKES = 10;
+
 /**
- * Find the pen-up stroke in the page's element list. The pen-up element's
- * `numInPage` is not guaranteed to be filled in, so match by uuid first, then
- * by identical first and last points among strokes.
+ * Find the pen-up stroke in the page's element list.
+ *
+ * The pen-up element is not committed yet: its uuid and numInPage may differ
+ * from the page copy, and its coordinates may be in another system. What
+ * survives is the sample count, and the gesture is the newest stroke on the
+ * page. So: match by uuid if possible, else the newest stroke with the same
+ * number of points, else the newest one within 5 % of it.
  */
 async function findStoredStroke(
   elements: PageElement[],
   gesture: PageElement,
-  points: Pt[],
+  pointCount: number,
+  trace: (line: string) => void,
 ): Promise<PageElement | null> {
   const byUuid = elements.find(
     e => e.uuid === gesture.uuid && e.numInPage >= 1,
@@ -282,26 +317,25 @@ async function findStoredStroke(
   if (byUuid) {
     return byUuid;
   }
-  const first = points[0];
-  const last = points[points.length - 1];
-  // Newest strokes are at the end of the page list, so search backwards.
-  for (let i = elements.length - 1; i >= 0; i--) {
-    const e = elements[i];
-    if (e.type !== STROKE) {
-      continue;
-    }
-    const pts = await e.outline();
-    if (
-      pts.length > 0 &&
-      samePoint(pts[0], first) &&
-      samePoint(pts[pts.length - 1], last)
-    ) {
-      return e;
-    }
+  const recent = elements
+    .filter(e => e.type === STROKE && e.numInPage >= 1)
+    .sort((a, b) => b.numInPage - a.numInPage)
+    .slice(0, RECENT_STROKES);
+  const counts = await Promise.all(
+    recent.map(async e => (await e.outline()).length),
+  );
+  const exact = recent.findIndex((_, i) => counts[i] === pointCount);
+  if (exact >= 0) {
+    return recent[exact];
   }
+  const tolerance = Math.max(2, pointCount * 0.05);
+  const close = recent.findIndex(
+    (_, i) => Math.abs(counts[i] - pointCount) <= tolerance,
+  );
+  if (close >= 0) {
+    return recent[close];
+  }
+  const seen = recent.map((e, i) => `#${e.numInPage}:${counts[i]}`).join(' ');
+  trace(`no page stroke with ${pointCount} points; newest: ${seen || 'none'}`);
   return null;
-}
-
-function samePoint(a: Pt, b: Pt): boolean {
-  return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
 }
