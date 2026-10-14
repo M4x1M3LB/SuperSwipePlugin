@@ -1,10 +1,16 @@
 # SuperSwipe — pen gestures for Supernote notes
 
-A Supernote plugin for NOTE files, with two pen gestures:
+A Supernote plugin for NOTE files, with pen gestures:
 
 - **Loop to select:** draw a closed loop around strokes and they get
   lasso-selected. The loop disappears and the regular lasso toolbar appears,
   so you can move, resize, copy or delete the selection as usual.
+- **Corners to select:** draw a ┌ and a ┘ (two strokes, either order) at
+  the corners of what you want; what is inside is selected and both
+  corners disappear.
+- **Line to select:** draw a long straight line across the page, clear of
+  the writing; everything above or below it is selected. With writing on
+  both sides, the device asks which.
 - **Margin wave to erase:** draw a sideways wave with three bounces or more
   (∿∿, a tilde with an extra bounce) in the margin next to a line of
   writing, left or right, and that whole line is erased, with the wave.
@@ -14,7 +20,7 @@ Built with the official plugin framework (React Native 0.79.2,
 
 ## Behaviour
 
-Both gestures:
+All gestures:
 
 - Work with the ink pens (fineliner, pressure pen, calligraphy). The marker
   is ignored, so highlighter circles and lines stay ink.
@@ -52,6 +58,32 @@ Loop to select:
   drawing an "O" or a circle on empty paper still works.
 - Circling twice works too (inside is decided by winding, not by counting
   crossings).
+
+Corners to select:
+
+- Each corner is one stroke: a horizontal and a vertical leg, roughly
+  straight (within 30° of the axes), each at least 30 px, drawn from either
+  end. Only ┌ (top-left) and ┘ (bottom-right) count, so an "L" never does.
+- When one is drawn, its partner is looked for among the 20 newest strokes
+  on the page: the opposite corner, diagonally across. Order and timing do
+  not matter. Without a partner, the corner stays as ink (it may be the
+  first of the two).
+- Selected: every element with at least half of its outline inside the
+  rectangle (counted 20 px larger, as for the loop). An empty rectangle
+  leaves both corners as ink.
+
+Line to select:
+
+- One straight stroke, within 12° of horizontal, at least 30 % of the page
+  wide.
+- It must not cross any writing (a strike-through) or come within 20 px of
+  writing over its length (an underline): those stay ink.
+- Writing on one side only: that side is selected at once. On both sides:
+  a dialog asks "Above" or "Below"; no answer, nothing happens.
+- Selected: every element whose centre is on that side, across the whole
+  page width.
+- A line shorter than 300 never causes the page to be read, so dashes and
+  "t" bars cost nothing.
 
 Margin wave to erase:
 
@@ -92,6 +124,9 @@ Margin wave to erase:
 - **The selection is a rectangle.** `lassoElements` only accepts a rectangle,
   so the selection is the bounding box of everything the loop enclosed.
   Strokes that sit inside that box but outside your loop are selected too.
+- **The above/below dialog** is the device's own; which button is which
+  is not documented, so the trace shows its raw answer ("dialog returned
+  true/false") in case they come out swapped.
 - **Circling for emphasis, or a wave next to a line.** Circling a word
   selects it, and a wave beside a line erases it. A wavy word (such as a
   cursive "mm") written alone at the end of a line, after a wide gap, can
@@ -101,13 +136,14 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.17.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.18.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
 3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes).
-4. Draw a loop around some writing, or a wave beside a line.
+4. Draw a loop around some writing, ┌ and ┘ around a block, a line under
+   a section, or a wave beside a line.
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
@@ -132,7 +168,7 @@ Layout:
 | --- | --- |
 | `index.js` | Plugin entry: `PluginManager.init()`, buttons, starts the listener |
 | `App.tsx` | Plugin screen (switches, restore, file access, last result) |
-| `src/geometry.ts` | Loop and wave detection, containment, line of writing (pure) |
+| `src/geometry.ts` | Loop, corner, line and wave detection, containment, line of writing (pure) |
 | `src/selector.ts` | Gesture flows on pen-up, against a `Host` interface (pure) |
 | `src/host.ts` | `Host` with `sn-plugin-lib`, pen tracker, erase restore |
 | `src/plugin.ts` | Wires the pen-up event to the selector with a timeout |

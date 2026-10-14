@@ -6,6 +6,11 @@
  * - Margin wave to erase: a sideways wave with 3 bounces or more ("∿∿", a
  *   tilde with an extra bounce), in the margin level with a line of
  *   writing, erases that line and the wave.
+ * - Line to select: a straight horizontal line across the page, clear of
+ *   the writing, selects everything above or below it (asking which when
+ *   there is writing on both sides).
+ * - Corners to select: a ┌ and a ┘ (two strokes, either order) mark the
+ *   corners of a rectangle; what is inside is selected.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -16,6 +21,9 @@ import type {SelectorConfig} from './config';
 import {
   boundingBox,
   checkClosedLoop,
+  checkCorner,
+  checkStraightLine,
+  distance,
   findClosedLoop,
   checkWave,
   findWritingLine,
@@ -25,6 +33,7 @@ import {
   strokesTouch,
   unionBoxes,
   type Box,
+  type CornerKind,
   type Pt,
 } from './geometry';
 
@@ -70,6 +79,8 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /** Ask the user which side of a line to select; null if unanswered. */
+  askAboveOrBelow(): Promise<'above' | 'below' | null>;
   /**
    * Reload the note, which repaints the page (deleted strokes otherwise
    * linger on screen). Only call it once the saved file is known to match
@@ -84,6 +95,8 @@ export interface Host {
 export interface Gestures {
   loopSelect: boolean;
   marginErase: boolean;
+  lineSelect?: boolean;
+  cornerSelect?: boolean;
   /** Repaint the page after an erase (against ghosting). */
   screenRefresh?: boolean;
 }
@@ -117,6 +130,8 @@ export interface HandleOptions {
   isCancelled?: () => boolean;
   /** Receives one line per decision, shown on the plugin screen. */
   trace?: (line: string) => void;
+  /** Called after waiting on the user, so that time is not held against us. */
+  keepAlive?: () => void;
 }
 
 export async function handlePenUp(
@@ -128,6 +143,7 @@ export async function handlePenUp(
   const gestures = options.gestures ?? {loopSelect: true, marginErase: true};
   const isCancelled = options.isCancelled ?? (() => false);
   const trace = options.trace ?? (() => {});
+  const keepAlive = options.keepAlive ?? (() => {});
 
   const types = penUpElements.map(e => `${e.type}/${e.penType}`).join(', ');
   trace(`pen-up: ${penUpElements.length} element(s) [type/pen ${types}]`);
@@ -152,6 +168,8 @@ export async function handlePenUp(
   let gesture: PageElement | null = null;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
+  let isLine = false;
+  let isCorner = false;
   for (let i = ink.length - 1; i >= 0 && !gesture; i--) {
     const candidate = ink[i];
     const pts = await candidate.outline();
@@ -174,11 +192,40 @@ export async function handlePenUp(
       }
       trace(`  loop check: ${loop.reason}`);
     }
+    if (gestures.lineSelect ?? true) {
+      // Long enough, so a dash or a "t" bar never makes us read the page.
+      const long = (r: ReturnType<typeof checkStraightLine>) =>
+        'from' in r && distance(r.from, r.to) >= config.lineMinPenUpLength;
+      const line = checkStraightLine(pts, config.straightLine);
+      const swapped = pts.map(p => ({x: p.y, y: p.x}));
+      if (long(line) || long(checkStraightLine(swapped, config.straightLine))) {
+        [gesture, points, isLine] = [candidate, pts, true];
+        break;
+      }
+      trace(`  line check: ${'reason' in line ? line.reason : 'too short'}`);
+    }
+    if (gestures.cornerSelect ?? true) {
+      const corner = checkCorner(pts, config.corner);
+      const swapped = pts.map(p => ({x: p.y, y: p.x}));
+      if ('kind' in corner || 'kind' in checkCorner(swapped, config.corner)) {
+        [gesture, points, isCorner] = [candidate, pts, true];
+        break;
+      }
+      trace(`  corner check: ${corner.reason}`);
+    }
   }
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: wave');
+  trace(
+    polygon
+      ? 'shape: closed loop'
+      : isLine
+      ? 'shape: line'
+      : isCorner
+      ? 'shape: corner'
+      : 'shape: wave',
+  );
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -227,6 +274,20 @@ export async function handlePenUp(
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
   };
+  if (isCorner) {
+    const corner = checkCorner(stored, config.corner);
+    if ('reason' in corner) {
+      return {kind: 'ignored', reason: `corner on the page: ${corner.reason}`};
+    }
+    return selectInCorners(ctx, corner);
+  }
+  if (isLine) {
+    const line = checkStraightLine(stored, config.straightLine);
+    if ('reason' in line) {
+      return {kind: 'ignored', reason: `line on the page: ${line.reason}`};
+    }
+    return selectBesideLine(ctx, stored, line, keepAlive);
+  }
   if (polygon) {
     const pagePolygon = findClosedLoop(stored, config.loop);
     if (!pagePolygon) {
@@ -295,6 +356,187 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
   return {kind: 'selected', count: boxes.length, rect};
+}
+
+/**
+ * Select what is inside the rectangle marked by this corner and its
+ * partner: the newest opposite corner, diagonally across, among the
+ * latest strokes. Without a partner the corner stays as ink: it may be
+ * the first of the two.
+ */
+async function selectInCorners(
+  ctx: Context,
+  corner: {kind: CornerKind; at: Pt},
+): Promise<Outcome> {
+  const {host, config, path, page, stroke} = ctx;
+  ctx.trace(`corner: ${corner.kind} at ${fmt(corner.at)}`);
+  const recent = ctx.others
+    .filter(e => e.type === STROKE)
+    .sort((a, b) => b.numInPage - a.numInPage)
+    .slice(0, config.cornerPartnerSearch);
+  const recentOutlines = await outlinesOf(recent);
+  let partner: PageElement | null = null;
+  let rect: Box | null = null;
+  for (let i = 0; i < recent.length && !partner; i++) {
+    const other = checkCorner(recentOutlines[i], config.corner);
+    if (!('kind' in other) || other.kind === corner.kind) {
+      continue;
+    }
+    const [tl, br] =
+      corner.kind === 'topLeft' ? [corner.at, other.at] : [other.at, corner.at];
+    if (
+      br.x - tl.x >= config.corner.minLeg &&
+      br.y - tl.y >= config.corner.minLeg
+    ) {
+      partner = recent[i];
+      rect = {left: tl.x, top: tl.y, right: br.x, bottom: br.y};
+    }
+  }
+  if (!partner || !rect) {
+    return {kind: 'ignored', reason: 'corner without its partner (yet)'};
+  }
+  ctx.trace(
+    `rectangle: ${Math.round(rect.right - rect.left)}×${Math.round(
+      rect.bottom - rect.top,
+    )} px, partner #${partner.numInPage}`,
+  );
+
+  const area = growPolygon(
+    [
+      {x: rect.left, y: rect.top},
+      {x: rect.right, y: rect.top},
+      {x: rect.right, y: rect.bottom},
+      {x: rect.left, y: rect.bottom},
+    ],
+    config.loopMargin,
+  );
+  const inside = ctx.others.filter(e => e !== partner);
+  const boxes: Box[] = [];
+  for (const outline of await outlinesOf(inside)) {
+    if (
+      outline.length > 0 &&
+      fractionInside(outline, area) >= config.minInsideFraction
+    ) {
+      boxes.push(boundingBox(outline));
+    }
+  }
+  ctx.trace(`enclosed: ${boxes.length} element(s)`);
+  const enclosed = unionBoxes(boxes);
+  if (!enclosed) {
+    return {kind: 'ignored', reason: 'rectangle encloses nothing'};
+  }
+  const size = await host.getPageSize(path, page);
+  if (!size) {
+    return {kind: 'failed', reason: 'page size unavailable'};
+  }
+
+  const blocked = await checkBeforeEdit(ctx);
+  if (blocked) {
+    return blocked;
+  }
+  const nums = [stroke.numInPage, partner.numInPage].sort((a, b) => b - a);
+  if (!(await host.deleteElements(nums, page, stroke.layerNum))) {
+    return {kind: 'failed', reason: 'could not remove the corners'};
+  }
+  ctx.trace('corners removed');
+  const lasso = padAndClamp(enclosed, config.lassoPadding, size);
+  ctx.trace(
+    `lasso: ${lasso.left},${lasso.top} → ${lasso.right},${lasso.bottom}`,
+  );
+  if (!(await host.lassoRect(lasso))) {
+    return {kind: 'failed', reason: 'could not create lasso selection'};
+  }
+  return {kind: 'selected', count: boxes.length, rect: lasso};
+}
+
+/**
+ * Select everything above or below a separator line: the side with writing,
+ * or the side the user picks when there is writing on both.
+ */
+async function selectBesideLine(
+  ctx: Context,
+  outline: Pt[],
+  line: {from: Pt; to: Pt},
+  keepAlive: () => void,
+): Promise<Outcome> {
+  const {host, config, path, page, stroke} = ctx;
+  const size = await host.getPageSize(path, page);
+  if (!size) {
+    return {kind: 'failed', reason: 'page size unavailable'};
+  }
+  const length = line.to.x - line.from.x;
+  ctx.trace(`line: ${Math.round(length)} px at y ${Math.round(line.from.y)}`);
+  const minLength = config.lineMinWidthRatio * size.width;
+  if (length < minLength) {
+    return {
+      kind: 'ignored',
+      reason: `line too short (${Math.round(length)} px, needs ${Math.round(
+        minLength,
+      )})`,
+    };
+  }
+
+  const lineY = (line.from.y + line.to.y) / 2;
+  const lineBox = boundingBox(outline);
+  const outlines = await outlinesOf(ctx.others);
+  const above: Box[] = [];
+  const below: Box[] = [];
+  for (let i = 0; i < outlines.length; i++) {
+    const pts = outlines[i];
+    if (pts.length === 0) {
+      continue;
+    }
+    if (strokesTouch(outline, pts, config.eraseTouchTolerance)) {
+      return {kind: 'ignored', reason: 'line crosses the writing'};
+    }
+    const box = boundingBox(pts);
+    // Writing just above or below the line, in its span: an underline.
+    const overlaps = box.right > lineBox.left && box.left < lineBox.right;
+    const gap = Math.max(box.top - lineBox.bottom, lineBox.top - box.bottom);
+    if (overlaps && gap < config.lineClearance) {
+      return {
+        kind: 'ignored',
+        reason: `writing ${Math.round(gap)} px from the line (an underline?)`,
+      };
+    }
+    ((box.top + box.bottom) / 2 < lineY ? above : below).push(box);
+  }
+  ctx.trace(`above: ${above.length}, below: ${below.length}`);
+  if (above.length === 0 && below.length === 0) {
+    return {kind: 'ignored', reason: 'nothing above or below the line'};
+  }
+
+  let side: 'above' | 'below' | null;
+  if (above.length === 0 || below.length === 0) {
+    side = above.length > 0 ? 'above' : 'below';
+  } else {
+    if (ctx.isCancelled()) {
+      return {kind: 'ignored', reason: 'page changed'};
+    }
+    side = await host.askAboveOrBelow();
+    keepAlive();
+    ctx.trace(`asked: ${side ?? 'no answer'}`);
+    if (!side) {
+      return {kind: 'ignored', reason: 'no side chosen'};
+    }
+  }
+  const chosen = side === 'above' ? above : below;
+  const enclosed = unionBoxes(chosen)!;
+
+  const blocked = await checkBeforeEdit(ctx);
+  if (blocked) {
+    return blocked;
+  }
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
+    return {kind: 'failed', reason: 'could not remove the line'};
+  }
+  ctx.trace(`line removed, selecting ${side}`);
+  const rect = padAndClamp(enclosed, config.lassoPadding, size);
+  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
+  if (!(await host.lassoRect(rect))) {
+    return {kind: 'failed', reason: 'could not create lasso selection'};
+  }
+  return {kind: 'selected', count: chosen.length, rect};
 }
 
 /**

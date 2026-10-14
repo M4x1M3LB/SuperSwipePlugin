@@ -23,7 +23,12 @@ export function startGestures(): void {
       status.countPenUp();
       const gestures = status.gestures();
       if (
-        (!gestures.loopSelect && !gestures.marginErase) ||
+        !(
+          gestures.loopSelect ||
+          gestures.marginErase ||
+          gestures.lineSelect ||
+          gestures.cornerSelect
+        ) ||
         !Array.isArray(msg)
       ) {
         return;
@@ -56,6 +61,10 @@ export function startGestures(): void {
         gestures,
         isCancelled: () => abandoned,
         trace,
+        // Time spent waiting for the user's answer does not count.
+        keepAlive: () => {
+          current.since = Date.now();
+        },
       })
         .catch(
           (e: unknown): Outcome => ({

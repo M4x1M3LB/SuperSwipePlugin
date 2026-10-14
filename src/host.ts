@@ -3,6 +3,7 @@
  */
 
 import {
+  NativeUIUtils,
   PluginCommAPI,
   PluginFileAPI,
   PluginManager,
@@ -388,6 +389,25 @@ export function createHost(pen: PenTracker): DeviceHost {
         trace,
       );
       return ok === true;
+    },
+
+    async askAboveOrBelow() {
+      // The device's own two-button dialog. Its result is not documented:
+      // taken as true for the right button (as for an OK button on the
+      // right); the raw value is traced so a swap is easy to spot.
+      try {
+        const right = await NativeUIUtils.showRattaDialog(
+          'Select everything above or below the line?',
+          'Above',
+          'Below',
+          true,
+        );
+        trace(`dialog returned ${String(right)}`);
+        return right === true ? 'below' : right === false ? 'above' : null;
+      } catch (e) {
+        trace(`dialog threw: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }
     },
 
     release() {

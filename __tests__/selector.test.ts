@@ -52,7 +52,7 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   remembered: PageElement[][];
-  /** Calls in order: 'delete', 'reload', 'lasso'. */
+  /** Calls in order: 'delete', 'reload', 'lasso', 'ask'. */
   calls: string[];
 }
 
@@ -102,6 +102,10 @@ function fakeHost(
       host.calls.push('lasso');
       host.lassoed.push(rect);
       return true;
+    },
+    askAboveOrBelow: async () => {
+      host.calls.push('ask');
+      return 'below';
     },
     release: () => {},
     ...overrides,
@@ -648,5 +652,176 @@ describe('handlePenUp: margin wave to erase', () => {
       });
     }
     expect(host.deleted).toEqual([]);
+  });
+});
+
+describe('handlePenUp: line to select above or below', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  const separator = () => el(straight({x: 100, y: 800}, {x: 1000, y: 802}));
+
+  it('asks, then removes the line and selects the side picked', async () => {
+    const above = [el(word(100, 600)), el(word(300, 700))];
+    const below = [el(word(100, 900)), el(word(300, 1000))];
+    const line = separator();
+    const host = fakeHost([...above, ...below, line]);
+    let kept = 0;
+
+    const outcome = await handlePenUp([line], host, DEFAULT_CONFIG, {
+      keepAlive: () => kept++,
+    });
+    expect(outcome).toMatchObject({kind: 'selected', count: 2});
+    expect(host.calls).toEqual(['ask', 'delete', 'lasso']);
+    expect(host.deleted).toEqual([[5]]);
+    expect(host.lassoed[0].top).toBeGreaterThan(890);
+    expect(kept).toBe(1);
+
+    host.askAboveOrBelow = async () => 'above';
+    const line2 = separator();
+    const host2 = fakeHost([...above, ...below, line2]);
+    host2.askAboveOrBelow = host.askAboveOrBelow;
+    await handlePenUp([line2], host2, DEFAULT_CONFIG);
+    expect(host2.lassoed[0].bottom).toBeLessThan(720);
+  });
+
+  it('does not ask when there is writing on one side only', async () => {
+    const line = separator();
+    const host = fakeHost([el(word(100, 600)), line]);
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 1,
+    });
+    expect(host.calls).toEqual(['delete', 'lasso']);
+  });
+
+  it('does nothing when the dialog is not answered', async () => {
+    const line = separator();
+    const host = fakeHost([el(word(100, 600)), el(word(100, 900)), line]);
+    host.askAboveOrBelow = async () => null;
+
+    expect(await handlePenUp([line], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'no side chosen',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('leaves underlines, strike-throughs and short lines as ink', async () => {
+    const underline = el(straight({x: 100, y: 615}, {x: 600, y: 615}));
+    const host = fakeHost([el(word(100, 600)), underline]);
+    expect(await handlePenUp([underline], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+      reason: expect.stringContaining('an underline'),
+    });
+
+    const strike = el(straight({x: 50, y: 603}, {x: 600, y: 603}));
+    const host2 = fakeHost([el(word(100, 600)), strike]);
+    expect(await handlePenUp([strike], host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'line crosses the writing',
+    });
+
+    // 350 px: worth a look, but under 30 % of the 1404 px page.
+    const short = el(straight({x: 100, y: 800}, {x: 450, y: 800}));
+    const host3 = fakeHost([el(word(100, 600)), short]);
+    expect(await handlePenUp([short], host3, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'line too short (350 px, needs 421)',
+    });
+  });
+
+  it('never reads the page for a dash', async () => {
+    const dash = el(straight({x: 100, y: 800}, {x: 140, y: 800}));
+    const host = fakeHost([dash]);
+    let reads = 0;
+    host.getPageElements = async () => {
+      reads++;
+      return [dash];
+    };
+
+    await handlePenUp([dash], host, DEFAULT_CONFIG);
+    expect(reads).toBe(0);
+  });
+});
+
+describe('handlePenUp: corners to select', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  const topLeft = (x: number, y: number) =>
+    el([
+      ...straight({x, y: y + 60}, {x, y}, 10),
+      ...straight({x, y}, {x: x + 60, y}, 10),
+    ]);
+  const bottomRight = (x: number, y: number) =>
+    el([
+      ...straight({x: x - 60, y}, {x, y}, 10),
+      ...straight({x, y}, {x, y: y - 60}, 10),
+    ]);
+
+  it('selects what the ┌ and ┘ enclose, removing both', async () => {
+    const inside = [el(word(450, 450)), el(word(600, 600))];
+    const outside = el(word(1000, 1500));
+    const tl = topLeft(400, 400);
+    const br = bottomRight(800, 700);
+    const host = fakeHost([...inside, outside, tl, br]);
+
+    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 2,
+    });
+    expect(host.deleted).toEqual([[5, 4]]);
+    expect(host.calls).toEqual(['delete', 'lasso']);
+    const rect = host.lassoed[0];
+    expect(rect.left).toBeGreaterThan(440);
+    expect(rect.right).toBeLessThan(700);
+  });
+
+  it('works in either order', async () => {
+    const inside = el(word(450, 450));
+    const br = bottomRight(800, 700);
+    const tl = topLeft(400, 400);
+    const host = fakeHost([inside, br, tl]);
+
+    expect(await handlePenUp([tl], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+      count: 1,
+    });
+  });
+
+  it('leaves a lone corner as ink, waiting for its partner', async () => {
+    const tl = topLeft(400, 400);
+    const host = fakeHost([el(word(450, 450)), tl]);
+
+    expect(await handlePenUp([tl], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'corner without its partner (yet)',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('ignores a ┘ that is not below and right of the ┌', async () => {
+    const tl = topLeft(400, 400);
+    const br = bottomRight(380, 900); // left of the ┌
+    const host = fakeHost([el(word(450, 450)), tl, br]);
+
+    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+    });
+  });
+
+  it('leaves an empty rectangle as ink', async () => {
+    const tl = topLeft(400, 400);
+    const br = bottomRight(800, 700);
+    const host = fakeHost([el(word(1000, 1500)), tl, br]);
+
+    expect(await handlePenUp([br], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'rectangle encloses nothing',
+    });
   });
 });

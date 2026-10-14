@@ -449,7 +449,9 @@ export function checkWave(
     back += Math.max(0, -dir * (points[i].x - points[i - 1].x));
   }
   if (back > options.maxBacktrack * width) {
-    return {reason: `goes back on itself (${Math.round((100 * back) / width)} %)`};
+    return {
+      reason: `goes back on itself (${Math.round((100 * back) / width)} %)`,
+    };
   }
   // Bounces, with hysteresis so a shaky hand does not add any.
   const turn = options.bounceRatio * height;
@@ -484,6 +486,153 @@ export function checkWave(
     }
   }
   return {box};
+}
+
+export interface StraightLineOptions {
+  /** Minimum number of sample points. */
+  minPoints: number;
+  /** Farthest any point may be from the start-end chord, × its length. */
+  maxDeviation: number;
+  /** Path length over chord length, at most (no back and forth). */
+  maxPathRatio: number;
+  /** Largest angle from horizontal, in degrees. */
+  maxTiltDegrees: number;
+}
+
+export const DEFAULT_STRAIGHT_LINE_OPTIONS: StraightLineOptions = {
+  minPoints: 5,
+  maxDeviation: 0.06,
+  maxPathRatio: 1.15,
+  maxTiltDegrees: 12,
+};
+
+/**
+ * Is the stroke a straight horizontal line? Returns its two ends, left one
+ * first, or why not. Only ratios and angles are used, so the check works
+ * on the pen-up copy (callers try both axes there if those may differ).
+ */
+export function checkStraightLine(
+  points: Pt[],
+  options: StraightLineOptions = DEFAULT_STRAIGHT_LINE_OPTIONS,
+): {from: Pt; to: Pt} | {reason: string} {
+  if (points.length < options.minPoints) {
+    return {reason: 'too few points'};
+  }
+  const a = points[0];
+  const b = points[points.length - 1];
+  const chord = distance(a, b);
+  if (chord <= 0) {
+    return {reason: 'no length'};
+  }
+  const tilt =
+    (Math.atan2(Math.abs(b.y - a.y), Math.abs(b.x - a.x)) * 180) / Math.PI;
+  if (tilt > options.maxTiltDegrees) {
+    return {reason: `not horizontal (${Math.round(tilt)}°)`};
+  }
+  if (pathLength(points) > options.maxPathRatio * chord) {
+    return {reason: 'not straight (goes back and forth)'};
+  }
+  let deviation = 0;
+  for (const p of points) {
+    deviation = Math.max(deviation, Math.abs(cross(a, b, p)) / chord);
+  }
+  if (deviation > options.maxDeviation * chord) {
+    return {reason: 'not straight (bends)'};
+  }
+  return a.x <= b.x ? {from: a, to: b} : {from: b, to: a};
+}
+
+export interface CornerOptions {
+  /** Minimum number of sample points. */
+  minPoints: number;
+  /** Shortest leg, in px (also a safe floor in the pen-up copy's units). */
+  minLeg: number;
+  /** Shorter leg over longer leg, at least. */
+  minLegRatio: number;
+  /** Farthest a leg's points may stray from it, × its length. */
+  maxLegDeviation: number;
+  /** Largest angle of a leg from its axis, in degrees. */
+  maxLegTiltDegrees: number;
+}
+
+export const DEFAULT_CORNER_OPTIONS: CornerOptions = {
+  minPoints: 5,
+  minLeg: 30,
+  minLegRatio: 0.2,
+  maxLegDeviation: 0.25,
+  maxLegTiltDegrees: 30,
+};
+
+/** Top-left "┌" or bottom-right "┘" corner of a rectangle. */
+export type CornerKind = 'topLeft' | 'bottomRight';
+
+/**
+ * Is the stroke a ┌ or ┘ corner: two roughly straight legs, one horizontal
+ * and one vertical, meeting at an elbow? Drawn from either end. Returns the
+ * corner's kind and its elbow, or why not. Only ratios, angles and a
+ * minimum length are used.
+ */
+export function checkCorner(
+  points: Pt[],
+  options: CornerOptions = DEFAULT_CORNER_OPTIONS,
+): {kind: CornerKind; at: Pt} | {reason: string} {
+  if (points.length < options.minPoints) {
+    return {reason: 'too few points'};
+  }
+  const a = points[0];
+  const b = points[points.length - 1];
+  const chord = distance(a, b);
+  if (chord <= 0) {
+    return {reason: 'no length'};
+  }
+  // The elbow: the point farthest from the line between the two ends.
+  let k = 0;
+  let far = -1;
+  points.forEach((p, i) => {
+    const d = Math.abs(cross(a, b, p));
+    if (d > far) {
+      [far, k] = [d, i];
+    }
+  });
+  const elbow = points[k];
+  const legs = [points.slice(0, k + 1), points.slice(k)];
+  const lengths = legs.map(l => distance(l[0], l[l.length - 1]));
+  if (Math.min(...lengths) < options.minLeg) {
+    return {reason: 'legs too short'};
+  }
+  if (Math.min(...lengths) < options.minLegRatio * Math.max(...lengths)) {
+    return {reason: 'legs too unequal'};
+  }
+  for (let i = 0; i < 2; i++) {
+    const leg = legs[i];
+    const [s, e] = [leg[0], leg[leg.length - 1]];
+    const stray = Math.max(...leg.map(p => Math.abs(cross(s, e, p))));
+    if (stray / lengths[i] > options.maxLegDeviation * lengths[i]) {
+      return {reason: 'legs not straight'};
+    }
+  }
+  // Each leg as a vector away from the elbow.
+  const [v1, v2] = [a, b].map(p => ({x: p.x - elbow.x, y: p.y - elbow.y}));
+  const tilt = (v: Pt) =>
+    (Math.atan2(Math.abs(v.y), Math.abs(v.x)) * 180) / Math.PI;
+  const flat = (v: Pt) => tilt(v) <= options.maxLegTiltDegrees;
+  const upright = (v: Pt) => tilt(v) >= 90 - options.maxLegTiltDegrees;
+  const [h, v] =
+    flat(v1) && upright(v2)
+      ? [v1, v2]
+      : flat(v2) && upright(v1)
+      ? [v2, v1]
+      : [null, null];
+  if (!h || !v) {
+    return {reason: 'not a right angle on the axes'};
+  }
+  if (h.x > 0 && v.y > 0) {
+    return {kind: 'topLeft', at: elbow};
+  }
+  if (h.x < 0 && v.y < 0) {
+    return {kind: 'bottomRight', at: elbow};
+  }
+  return {reason: 'a corner, but only ┌ and ┘ count'};
 }
 
 export interface WritingLineOptions {
