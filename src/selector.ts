@@ -175,15 +175,6 @@ export async function handlePenUp(
     const pts = await candidate.outline();
     const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
     trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
-    if (gestures.marginErase) {
-      const wave = checkWave(pts, config.wave, false);
-      const swapped = pts.map(p => ({x: p.y, y: p.x}));
-      if ('box' in wave || 'box' in checkWave(swapped, config.wave, false)) {
-        [gesture, points] = [candidate, pts];
-        break;
-      }
-      trace(`  wave check: ${wave.reason}`);
-    }
     if (gestures.loopSelect) {
       const loop = checkClosedLoop(pts, config.loop);
       if ('polygon' in loop) {
@@ -203,6 +194,15 @@ export async function handlePenUp(
         break;
       }
       trace(`  line check: ${'reason' in line ? line.reason : 'too short'}`);
+    }
+    if (gestures.marginErase) {
+      const wave = checkWave(pts, config.wave, false);
+      const swapped = pts.map(p => ({x: p.y, y: p.x}));
+      if ('box' in wave || 'box' in checkWave(swapped, config.wave, false)) {
+        [gesture, points] = [candidate, pts];
+        break;
+      }
+      trace(`  wave check: ${wave.reason}`);
     }
     if (gestures.cornerSelect ?? true) {
       const corner = checkCorner(pts, config.corner);
@@ -281,12 +281,21 @@ export async function handlePenUp(
     }
     return selectInCorners(ctx, corner);
   }
+  let lineOutcome: Outcome | null = null;
   if (isLine) {
     const line = checkStraightLine(stored, config.straightLine);
     if ('reason' in line) {
       return {kind: 'ignored', reason: `line on the page: ${line.reason}`};
     }
-    return selectBesideLine(ctx, stored, line, keepAlive);
+    lineOutcome = await selectBesideLine(ctx, stored, line, keepAlive);
+    // Too short for a line: maybe a flat wave in the margin.
+    const short =
+      lineOutcome.kind === 'ignored' &&
+      lineOutcome.reason.startsWith('line too short');
+    if (!short || !gestures.marginErase) {
+      return lineOutcome;
+    }
+    trace('too short for a line, trying a wave');
   }
   if (polygon) {
     const pagePolygon = findClosedLoop(stored, config.loop);
@@ -298,7 +307,13 @@ export async function handlePenUp(
 
   const checked = checkWave(stored, config.wave);
   if ('reason' in checked) {
-    return {kind: 'ignored', reason: `wave on the page: ${checked.reason}`};
+    trace(`wave on the page: ${checked.reason}`);
+    return (
+      lineOutcome ?? {
+        kind: 'ignored',
+        reason: `wave on the page: ${checked.reason}`,
+      }
+    );
   }
   const mark = checked.box;
   trace(

@@ -239,6 +239,18 @@ describe('checkStraightLine', () => {
     });
   });
 
+  it('accepts a hand-drawn line: bowed, tilted, shaky', () => {
+    // Bows 60 px over 800 px (7.5 %), rises 13°, shakes ±6 px.
+    const hand = Array.from({length: 81}, (_, i) => {
+      const t = i / 80;
+      return {
+        x: 100 + 800 * t,
+        y: 800 - 185 * t - 60 * Math.sin(Math.PI * t) + ((i * 7) % 13) - 6,
+      };
+    });
+    expect(checkStraightLine(hand)).toHaveProperty('from');
+  });
+
   it('rejects slanted, bent and back-and-forth strokes', () => {
     expect(checkStraightLine(line({x: 0, y: 0}, {x: 400, y: 200}))).toEqual({
       reason: 'not horizontal (27°)',

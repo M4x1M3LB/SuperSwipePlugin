@@ -501,9 +501,9 @@ export interface StraightLineOptions {
 
 export const DEFAULT_STRAIGHT_LINE_OPTIONS: StraightLineOptions = {
   minPoints: 5,
-  maxDeviation: 0.06,
-  maxPathRatio: 1.15,
-  maxTiltDegrees: 12,
+  maxDeviation: 0.1,
+  maxPathRatio: 1.3,
+  maxTiltDegrees: 15,
 };
 
 /**
