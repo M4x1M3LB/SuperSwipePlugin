@@ -6,10 +6,17 @@ import type {Gestures, Outcome} from './selector';
  */
 type Listener = () => void;
 
-let gestures: Gestures = {loopSelect: true, marginErase: true};
+let gestures: Gestures = {
+  loopSelect: true,
+  marginErase: true,
+  screenRefresh: true,
+};
 let lastOutcome: Outcome | null = null;
 let lastTrace: string[] = [];
 let penUpCount = 0;
+/** One line per recent stroke, newest first. */
+let history: string[] = [];
+const HISTORY_LENGTH = 8;
 const listeners = new Set<Listener>();
 
 function notify() {
@@ -33,8 +40,11 @@ export const status = {
   setLast(outcome: Outcome, trace: string[]) {
     lastOutcome = outcome;
     lastTrace = trace;
+    history = [summarise(outcome, trace), ...history].slice(0, HISTORY_LENGTH);
     notify();
   },
+  /** The last few strokes, newest first, one line each. */
+  history: () => history,
   subscribe(listener: Listener): () => void {
     listeners.add(listener);
     return () => listeners.delete(listener);
@@ -59,4 +69,20 @@ export function describeOutcome(outcome: Outcome | null): string {
     case 'failed':
       return `Last gesture failed: ${outcome.reason}.`;
   }
+}
+
+/**
+ * One line for the stroke history: what happened, and for a stroke that was
+ * not taken as a gesture, why each check refused it.
+ */
+export function summarise(outcome: Outcome, trace: string[]): string {
+  const time = new Date().toTimeString().slice(0, 8);
+  const reasons = trace
+    .filter(l => l.includes('check:'))
+    .map(l => l.trim())
+    .join('; ');
+  const what = describeOutcome(outcome);
+  return reasons && outcome.kind === 'ignored'
+    ? `${time} ${what} (${reasons})`
+    : `${time} ${what}`;
 }

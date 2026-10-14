@@ -48,7 +48,7 @@ export interface LoopOptions {
 
 export const DEFAULT_LOOP_OPTIONS: LoopOptions = {
   minPoints: 12,
-  minSize: 40,
+  minSize: 30,
   closeGapPx: 100,
   closeGapRatio: 0.2,
   endSearchRatio: 0.35,
@@ -157,13 +157,13 @@ export function fractionInside(points: Pt[], polygon: Pt[]): number {
  * sample points, so a loop that overshoots its start, or starts with a short
  * lead-in, still counts.
  */
-export function findClosedLoop(
+export function checkClosedLoop(
   points: Pt[],
   options: LoopOptions = DEFAULT_LOOP_OPTIONS,
-): Pt[] | null {
+): {polygon: Pt[]} | {reason: string} {
   const n = points.length;
   if (n < options.minPoints) {
-    return null;
+    return {reason: 'too few points'};
   }
 
   const box = boundingBox(points);
@@ -171,7 +171,7 @@ export function findClosedLoop(
     box.right - box.left < options.minSize ||
     box.bottom - box.top < options.minSize
   ) {
-    return null;
+    return {reason: 'too small'};
   }
 
   const length = pathLength(points);
@@ -198,20 +198,32 @@ export function findClosedLoop(
     }
   }
   if (bestI < 0 || bestGap > maxGap) {
-    return null;
+    return {
+      reason: `ends ${Math.round(bestGap)} apart (max ${Math.round(maxGap)})`,
+    };
   }
 
   const polygon = points.slice(bestI, bestJ + 1);
-  if (Math.abs(netTurning(polygon)) < options.minTurnDegrees) {
-    return null;
+  const turned = Math.abs(netTurning(polygon));
+  if (turned < options.minTurnDegrees) {
+    return {reason: `turns only ${Math.round(turned)}°`};
   }
   const polyBox = boundingBox(polygon);
   const boxArea =
     (polyBox.right - polyBox.left) * (polyBox.bottom - polyBox.top);
   if (boxArea <= 0 || polygonArea(polygon) / boxArea < options.minFillRatio) {
-    return null;
+    return {reason: 'encloses too little area'};
   }
-  return polygon;
+  return {polygon};
+}
+
+/** `checkClosedLoop`, keeping only the polygon. */
+export function findClosedLoop(
+  points: Pt[],
+  options: LoopOptions = DEFAULT_LOOP_OPTIONS,
+): Pt[] | null {
+  const result = checkClosedLoop(points, options);
+  return 'polygon' in result ? result.polygon : null;
 }
 
 /**
@@ -303,7 +315,7 @@ export const MARK_STROKE_OPTIONS: LineOptions = {
   minPoints: 3,
   minLength: 15,
   maxPathRatio: 1.4,
-  maxDeviationPx: 8,
+  maxDeviationPx: 10,
   maxDeviationRatio: 0.2,
 };
 
@@ -456,10 +468,10 @@ export interface CornerOptions {
 export const DEFAULT_CORNER_OPTIONS: CornerOptions = {
   leg: MARK_STROKE_OPTIONS,
   maxLeg: 250,
-  minLegRatio: 0.25,
-  minAngle: 60,
-  maxAngle: 120,
-  axisTolerance: 30,
+  minLegRatio: 0.2,
+  minAngle: 50,
+  maxAngle: 130,
+  axisTolerance: 35,
 };
 
 /** Angle of the vector a→b against the x axis, folded to 0..90 degrees. */

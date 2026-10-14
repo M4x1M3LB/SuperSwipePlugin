@@ -267,7 +267,7 @@ describe('checkCornerMark', () => {
     const lopsided = path([
       {x: 80, y: 440},
       {x: 80, y: 540},
-      {x: 60, y: 540},
+      {x: 62, y: 540},
     ]);
     expect(checkCornerMark(lopsided)).toEqual({
       reason: 'one leg much shorter than the other',

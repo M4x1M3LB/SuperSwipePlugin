@@ -5,8 +5,9 @@
  */
 
 import React, {useEffect, useState} from 'react';
-import {Pressable, StyleSheet, Text, View} from 'react-native';
+import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
+import {BLINK_MS, endBlink, isBlinking, subscribeBlink} from './src/blink';
 import {ensureFileAccess} from './src/host';
 import {restoreLastErase} from './src/plugin';
 import type {Gestures} from './src/selector';
@@ -16,6 +17,32 @@ function useStatus() {
   const [, setTick] = useState(0);
   useEffect(() => status.subscribe(() => setTick(t => t + 1)), []);
   return status;
+}
+
+/**
+ * Shown while the plugin view is opened only to make the device repaint the
+ * note page (see src/blink.ts): fully transparent, closes itself after
+ * BLINK_MS, or at once on any touch. Closing is also driven by animation
+ * frames, in case the host has paused the plugin's timers.
+ */
+function Blink(): React.JSX.Element {
+  useEffect(() => {
+    const timer = setTimeout(endBlink, BLINK_MS);
+    let frames = 0;
+    let frame = requestAnimationFrame(function tick() {
+      frames++;
+      if (frames >= 20) {
+        endBlink();
+      } else {
+        frame = requestAnimationFrame(tick);
+      }
+    });
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+  return <Pressable style={styles.blink} onPressIn={endBlink} />;
 }
 
 function Toggle(props: {label: string; name: keyof Gestures}) {
@@ -33,6 +60,8 @@ function Toggle(props: {label: string; name: keyof Gestures}) {
 
 function App(): React.JSX.Element {
   const s = useStatus();
+  const [, setBlinkTick] = useState(0);
+  useEffect(() => subscribeBlink(() => setBlinkTick(t => t + 1)), []);
   const [message, setMessage] = useState<string | null>(null);
 
   const requestAccess = async () => {
@@ -46,8 +75,12 @@ function App(): React.JSX.Element {
     setMessage(await restoreLastErase());
   };
 
+  if (isBlinking()) {
+    return <Blink />;
+  }
+
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
       <Pressable
         style={styles.close}
         onPress={() => PluginManager.closePluginView()}>
@@ -63,6 +96,7 @@ function App(): React.JSX.Element {
 
       <Toggle label="Loop to select" name="loopSelect" />
       <Toggle label="Margin ┌ ┘ to erase" name="marginErase" />
+      <Toggle label="Refresh screen after a gesture" name="screenRefresh" />
 
       <View style={styles.row}>
         <Pressable style={styles.button} onPress={restore}>
@@ -76,6 +110,16 @@ function App(): React.JSX.Element {
 
       <Text style={styles.status}>{describeOutcome(s.lastOutcome())}</Text>
       <Text style={styles.traceLine}>Strokes received: {s.penUpCount()}</Text>
+      {s.history().length > 1 && (
+        <View style={styles.trace}>
+          <Text style={styles.traceLine}>Recent strokes:</Text>
+          {s.history().map((line, i) => (
+            <Text key={i} style={styles.traceLine}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      )}
       {s.lastTrace().length > 0 && (
         <View style={styles.trace}>
           {s.lastTrace().map((line, i) => (
@@ -89,13 +133,21 @@ function App(): React.JSX.Element {
         Note: gestures clear the page's undo history (Supernote limitation). Use
         Restore last erase to undo an erase.
       </Text>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  blink: {
     flex: 1,
+    backgroundColor: 'transparent',
+  },
+  scroll: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+  },
+  container: {
+    flexGrow: 1,
     padding: 48,
     backgroundColor: '#ffffff',
   },

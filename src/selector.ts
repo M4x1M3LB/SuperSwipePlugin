@@ -15,6 +15,7 @@
 import type {SelectorConfig} from './config';
 import {
   boundingBox,
+  checkClosedLoop,
   findClosedLoop,
   checkCornerMark,
   findWritingLine,
@@ -69,6 +70,11 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /**
+   * Make the device repaint the page, without touching the note's data:
+   * strokes deleted outside a lasso otherwise linger on screen (ghosting).
+   */
+  refreshScreen(): Promise<void>;
   /** Free native element caches (except remembered erased elements). */
   release(): void;
 }
@@ -76,6 +82,8 @@ export interface Host {
 export interface Gestures {
   loopSelect: boolean;
   marginErase: boolean;
+  /** Repaint the page after a gesture deletes strokes (against ghosting). */
+  screenRefresh?: boolean;
 }
 
 export type Outcome =
@@ -98,6 +106,7 @@ interface Context {
   others: PageElement[];
   isCancelled: () => boolean;
   trace: (line: string) => void;
+  screenRefresh: boolean;
 }
 
 export interface HandleOptions {
@@ -134,33 +143,48 @@ export async function handlePenUp(
       e.penType !== null &&
       config.triggerPenTypes.includes(e.penType),
   );
-  const gesture = ink[ink.length - 1];
-  if (!gesture) {
+  if (ink.length === 0) {
     return {kind: 'ignored', reason: 'not an ink stroke'};
   }
 
-  const points = await gesture.outline();
-  trace(`stroke: pen ${gesture.penType}, ${points.length} points`);
-  const polygon = gestures.loopSelect
-    ? findClosedLoop(points, config.loop)
-    : null;
-  // On the pen-up copy, so nothing is read from (or saved to) the page for
-  // ordinary writing. Its orientation is only checked once the pen-up copy
-  // is known to be in page coordinates; otherwise on the page copy below.
-  let isMark = false;
-  if (!polygon && gestures.marginErase) {
-    const mark = checkCornerMark(
-      points,
-      config.corner,
-      options.penUpIsPage === true,
-    );
-    if ('reason' in mark) {
-      trace(`mark check: ${mark.reason}`);
-    } else {
-      isMark = true;
+  // Strokes drawn in quick succession arrive together in one event (seen on
+  // device), so a gesture may be followed by more writing: look at every
+  // stroke, newest first, and take the first gesture.
+  //
+  // Checked on the pen-up copy, so nothing is read from (or saved to) the
+  // page for ordinary writing. A mark's orientation is only checked once
+  // the pen-up copy is known to be in page coordinates; otherwise on the
+  // page copy below.
+  let gesture: PageElement | null = null;
+  let points: Pt[] = [];
+  let polygon: Pt[] | null = null;
+  for (let i = ink.length - 1; i >= 0 && !gesture; i--) {
+    const candidate = ink[i];
+    const pts = await candidate.outline();
+    const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
+    trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
+    if (gestures.loopSelect) {
+      const loop = checkClosedLoop(pts, config.loop);
+      if ('polygon' in loop) {
+        [gesture, points, polygon] = [candidate, pts, loop.polygon];
+        break;
+      }
+      trace(`  loop check: ${loop.reason}`);
+    }
+    if (gestures.marginErase) {
+      const mark = checkCornerMark(
+        pts,
+        config.corner,
+        options.penUpIsPage === true,
+      );
+      if ('box' in mark) {
+        [gesture, points] = [candidate, pts];
+        break;
+      }
+      trace(`  mark check: ${mark.reason}`);
     }
   }
-  if (!polygon && !isMark) {
+  if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
   trace(polygon ? 'shape: closed loop' : 'shape: margin mark');
@@ -202,7 +226,17 @@ export async function handlePenUp(
     e => e !== stroke && e.layerNum === stroke.layerNum,
   );
 
-  const ctx = {host, config, path, page, stroke, others, isCancelled, trace};
+  const ctx = {
+    host,
+    config,
+    path,
+    page,
+    stroke,
+    others,
+    isCancelled,
+    trace,
+    screenRefresh: gestures.screenRefresh ?? true,
+  };
   if (polygon) {
     const pagePolygon = findClosedLoop(stored, config.loop);
     if (!pagePolygon) {
@@ -278,6 +312,10 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
     return {kind: 'failed', reason: 'could not remove loop stroke'};
   }
   ctx.trace('loop stroke removed');
+  if (ctx.screenRefresh) {
+    await host.refreshScreen();
+    ctx.trace('screen refreshed');
+  }
 
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
@@ -344,6 +382,10 @@ async function eraseNextToMark(
   host.rememberErased(path, page, stroke.layerNum, erased);
   // Never reload the note to repaint: a reload that reads the file before
   // the save has finished brings back older strokes (seen on device).
+  if (ctx.screenRefresh) {
+    await host.refreshScreen();
+    ctx.trace('screen refreshed');
+  }
   return {kind: 'erased', count: erased.length};
 }
 

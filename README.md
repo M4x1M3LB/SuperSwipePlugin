@@ -22,11 +22,18 @@ Both gestures:
   the page or switch files in the meantime.
 - Only work in NOTE files (not PDFs/documents).
 - Can each be turned on or off from the plugin screen.
+- Are found even when quickly followed by more writing: the device delivers
+  strokes drawn in quick succession together, and every one of them is
+  checked, newest first.
+- Refresh the screen afterwards (switch on the plugin screen): the plugin
+  view opens fully transparent for a quarter of a second and closes, which
+  makes the device repaint the page, so deleted strokes do not linger as
+  ghosts. Any tap closes it at once. The note's data is not touched.
 
 Loop to select:
 
 - A loop counts when the stroke ends near where it started (within ~100 px or
-  20 % of its length; overshooting is fine too), is at least ~40 px wide and
+  20 % of its length; overshooting is fine too), is at least ~30 px wide and
   tall, actually encloses an area (back-and-forth scribbles are ignored), and
   turns at least 240° in total (so an L or a "7" is never taken for a loop).
 - An element is selected when at least half of its outline is inside the
@@ -42,8 +49,8 @@ Margin mark to erase:
   line on its right. Right margin: a ┘ (down, then left; or right, then up)
   erases the line on its left. One stroke each, like brackets around the
   line.
-- Both legs roughly straight, 15–250 px, the shorter at least a quarter of the
-  longer, meeting at 60–120°, leaning at most 30° off vertical/horizontal. A
+- Both legs roughly straight, 15–250 px, the shorter at least a fifth of the
+  longer, meeting at 50–130°, leaning at most 35° off vertical/horizontal. A
   written "L", "7" or "4" has its corner elsewhere and is left alone. If a
   mark is not recognised, the plugin screen says why.
 - The line it erases: every stroke whose vertical centre is level with the
@@ -54,9 +61,6 @@ Margin mark to erase:
   If anything level with it is on its other side (outside the line), or if
   it overlaps the writing, nothing happens. A mark with no writing next to
   it stays as ink.
-- The erased strokes may show again faintly where the pen passes, for a few
-  seconds (the device does not repaint after deletions outside a lasso). This
-  is only on screen: they are gone from the note.
 - Only handwritten strokes are erased (not text boxes, pictures, shapes).
 - Nothing is read from or saved to the note unless the stroke has the shape
   of a corner. From the first gesture on, the plugin also learns whether
@@ -94,9 +98,10 @@ Margin mark to erase:
 
 The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
 has an on/off switch per gesture, **Restore last erase**, and shows what
-happened to the last stroke, with a step-by-step trace and the number of
-strokes the plugin has received (useful when reporting a problem). The
-switches reset when the plugin host restarts.
+happened to the last stroke, with a step-by-step trace, the number of
+strokes the plugin has received, and the last 8 strokes with why each was or
+was not taken as a gesture (useful when a gesture is missed). The switches
+reset when the plugin host restarts.
 
 ## Development
 

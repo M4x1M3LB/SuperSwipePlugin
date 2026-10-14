@@ -12,6 +12,7 @@ import {
 } from 'sn-plugin-lib';
 import type {Box, Pt} from './geometry';
 import type {Host, PageElement} from './selector';
+import {blink} from './blink';
 
 interface Response<T> {
   success: boolean;
@@ -358,6 +359,12 @@ export function createHost(pen: PenTracker): DeviceHost {
       recycleAll(elements);
       erased = null;
       return `Restored ${elements.length} strokes on page ${page + 1}.`;
+    },
+
+    async refreshScreen() {
+      // Not while writing: the view would cover the page under the pen.
+      await pen.waitForUp(5000);
+      await blink();
     },
 
     async lassoRect(rect: Box) {

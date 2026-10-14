@@ -52,6 +52,8 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   remembered: PageElement[][];
+  /** Calls in order: 'delete', 'refresh', 'lasso'. */
+  calls: string[];
 }
 
 function fakeHost(
@@ -65,6 +67,7 @@ function fakeHost(
     deleted: [],
     lassoed: [],
     remembered: [],
+    calls: [],
     getCurrentFilePath: async () => '/storage/emulated/0/Note/demo.note',
     getCurrentPageNum: async () => 3,
     getPageSize: async () => ({width: 1404, height: 1872}),
@@ -72,6 +75,7 @@ function fakeHost(
     ensureFileAccess: async () => true,
     waitForPenUp: async () => {},
     deleteElements: async nums => {
+      host.calls.push('delete');
       host.deleted.push(nums);
       for (const num of nums) {
         const target = current.find(e => e.numInPage === num);
@@ -87,10 +91,14 @@ function fakeHost(
       }
       return true;
     },
+    refreshScreen: async () => {
+      host.calls.push('refresh');
+    },
     rememberErased: (_path, _page, _layer, elements) => {
       host.remembered.push(elements);
     },
     lassoRect: async rect => {
+      host.calls.push('lasso');
       host.lassoed.push(rect);
       return true;
     },
@@ -131,6 +139,37 @@ describe('handlePenUp', () => {
 
     expect(outcome).toEqual({kind: 'ignored', reason: 'loop encloses nothing'});
     expect(host.deleted).toEqual([]);
+  });
+
+  it('refreshes the screen after removing the loop, before selecting', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete', 'refresh', 'lasso']);
+  });
+
+  it('does not refresh the screen when that is switched off', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG, {
+      gestures: {loopSelect: true, marginErase: true, screenRefresh: false},
+    });
+    expect(host.calls).toEqual(['delete', 'lasso']);
+  });
+
+  it('finds a loop followed by more writing in the same pen-up event', async () => {
+    // Quick strokes arrive together: the loop is not the last one.
+    const inside = el(word(480, 500));
+    const loop = el(ellipse(520, 500, 200, 120));
+    const after = el(word(900, 1200));
+    const host = fakeHost([inside, loop, after]);
+
+    expect(
+      await handlePenUp([loop, after], host, DEFAULT_CONFIG),
+    ).toMatchObject({kind: 'selected', count: 1});
+    expect(host.deleted).toEqual([[loop.numInPage]]);
   });
 
   it('ignores open strokes without touching the page', async () => {
@@ -436,6 +475,14 @@ describe('handlePenUp: margin ┌ ┘ to erase', () => {
     expect(host.deleted).toEqual([[13, 8, 7, 6, 5]]);
     expect(await host.getPageElements('', 3)).toEqual([...above, ...below]);
     expect(host.remembered).toEqual([letters]);
+  });
+
+  it('refreshes the screen after erasing a line', async () => {
+    const mark = el(leftMark);
+    const host = fakeHost([...row(500), mark]);
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete', 'refresh']);
   });
 
   it('┘ in the right margin erases the line on its left, and itself', async () => {
