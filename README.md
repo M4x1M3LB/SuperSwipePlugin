@@ -79,8 +79,8 @@ Line to select:
 
 - One roughly straight stroke, within 15° of horizontal, at least 30 % of
   the page wide. Hand-drawn is fine: it may bow by up to 10 % of its length
-  and shake (path up to 1.3 × its length). A stroke too short for a line
-  is still tried as a wave.
+  and shake (path up to 1.3 × its length). A wobbly line that passes for
+  a wave is taken as a line once it turns out wider than a wave can be.
 - It must not cross any writing (a strike-through) or come within 20 px of
   writing over its length (an underline): those stay ink.
 - Writing on one side only: that side is selected at once. On both sides:
@@ -141,7 +141,7 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.20.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.21.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

@@ -733,23 +733,24 @@ describe('handlePenUp: line to select above or below', () => {
     });
   });
 
-  it('erases with a flat wave that is too short to be a line', async () => {
-    // 360 x 60 px, 3 bounces: within a line's bend, too short for one.
-    const flat = Array.from({length: 121}, (_, i) => ({
-      x: 40 + 3 * i,
-      y: 520 - 30 * Math.sin((3 * Math.PI * i) / 120),
+  it('takes a wobbly line for a line, even when it passes for a wave', async () => {
+    // 800 x 110 px, 3 bounces: wave-shaped, but far too wide for a wave.
+    const wobbly = Array.from({length: 121}, (_, i) => ({
+      x: 100 + (800 * i) / 120,
+      y: 800 - 55 * Math.sin((3 * Math.PI * i) / 120),
     }));
-    const mark = el(flat);
-    const letters = [500, 540, 580].map(x => el(letter(x, 500)));
-    const host = fakeHost([...letters, mark]);
+    const line = el(wobbly);
+    const host = fakeHost([el(word(100, 600)), line]);
     const lines: string[] = [];
 
     expect(
-      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      await handlePenUp([line], host, DEFAULT_CONFIG, {
         trace: l => lines.push(l),
       }),
-    ).toEqual({kind: 'erased', count: 3});
-    expect(lines).toContain('too short for a line, trying a wave');
+    ).toMatchObject({kind: 'selected', count: 1});
+    expect(lines).toContain(
+      'wave on the page: too big (800 px), trying a line',
+    );
   });
 
   it('never reads the page for a dash', async () => {
