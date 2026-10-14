@@ -497,6 +497,23 @@ describe('handlePenUp: margin ✕ to erase', () => {
     expect(lines.join('\n')).toContain('✕ check: strokes too parallel');
   });
 
+  it('recognises a ✕ whose two strokes arrive in one pen-up event', async () => {
+    // As seen on device: the ✕'s halves come together, and the previous
+    // event's stroke is 28 s old.
+    const letters = row(500);
+    const first = el(down);
+    const second = el(up);
+    const host = fakeHost([...letters, first, second]);
+
+    expect(
+      await handlePenUp([first, second], host, DEFAULT_CONFIG, {
+        previous: {points: word(600, 900), at: 0},
+        now: 28374,
+      }),
+    ).toEqual({kind: 'erased', count: 4});
+    expect(await host.getPageElements('', 3)).toEqual([]);
+  });
+
   it('needs both strokes within 2 seconds', async () => {
     const first = el(down);
     const second = el(up);

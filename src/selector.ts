@@ -133,14 +133,13 @@ export async function handlePenUp(
 
   const types = penUpElements.map(e => `${e.type}/${e.penType}`).join(', ');
   trace(`pen-up: ${penUpElements.length} element(s) [type/pen ${types}]`);
-  const gesture = [...penUpElements]
-    .reverse()
-    .find(
-      e =>
-        e.type === STROKE &&
-        e.penType !== null &&
-        config.triggerPenTypes.includes(e.penType),
-    );
+  const ink = penUpElements.filter(
+    e =>
+      e.type === STROKE &&
+      e.penType !== null &&
+      config.triggerPenTypes.includes(e.penType),
+  );
+  const gesture = ink[ink.length - 1];
   if (!gesture) {
     return {kind: 'ignored', reason: 'not an ink stroke'};
   }
@@ -153,7 +152,13 @@ export async function handlePenUp(
     : null;
   // Shape only, on the pen-up copies: nothing is read from (or saved to) the
   // page unless this stroke and the previous one form a ✕.
-  const previous = options.previous;
+  // Strokes drawn in quick succession (the two halves of a ✕) can arrive in
+  // one pen-up event (seen on device): pair the last two of the event, else
+  // this stroke with the one from the previous event.
+  const previous: PreviousStroke | null | undefined =
+    ink.length >= 2
+      ? {points: await ink[ink.length - 2].outline(), at: now}
+      : options.previous;
   let isMark = false;
   if (!polygon && gestures.marginErase) {
     if (!previous) {
