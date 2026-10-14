@@ -24,34 +24,70 @@ export function startGestures(): void {
   // next, together (newest first), not dropped: a gesture is often drawn
   // right after a stroke that made us read the page.
   let waiting: Element[] = [];
+  // Abandoned strokes still being handled. They may still read the
+  // elements read for them (an erase checking what is left reads a freed
+  // element as empty, takes the file for clean and reloads: old strokes
+  // come back), so nothing is freed until the last one settles.
+  let unsettled = 0;
+
+  /** Free what was read so far; never lets a failure stop the queue. */
+  const release = (pending: Element[], trace: (line: string) => void) => {
+    try {
+      device.release(
+        pending
+          .map(e => e?.uuid)
+          .filter((uuid): uuid is string => typeof uuid === 'string'),
+      );
+    } catch (e) {
+      trace(`release failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const handle = (raw: Element[]) => {
     const lines: string[] = [];
     const trace = (line: string) => {
       lines.push(line);
     };
+    const startedAt = Date.now();
     let abandoned = false;
+    const finish = (outcome: Outcome) => {
+      try {
+        trace(device.timeLine(Date.now() - startedAt));
+        if (device.pageWasRead()) {
+          status.countPageRead(outcome);
+        }
+      } catch (e) {
+        trace(`timing failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      status.setLast(outcome, lines);
+    };
     const current = {
-      since: Date.now(),
+      since: startedAt,
       abandon: () => {
         abandoned = true;
+        unsettled++;
         trace('abandoned: took too long');
-        status.setLast({kind: 'failed', reason: 'timed out'}, lines);
+        finish({kind: 'failed', reason: 'timed out'});
       },
     };
     busy = current;
     device.setTrace(trace);
 
-    const elements = device.wrap(raw);
-    handlePenUp(elements, device, DEFAULT_CONFIG, {
-      gestures: status.gestures(),
-      isCancelled: () => abandoned,
-      trace,
-      // Time spent waiting for the user's answer does not count.
-      keepAlive: () => {
-        current.since = Date.now();
-      },
-    })
+    let flow: Promise<Outcome>;
+    try {
+      flow = handlePenUp(device.wrap(raw), device, DEFAULT_CONFIG, {
+        gestures: status.gestures(),
+        isCancelled: () => abandoned,
+        trace,
+        // Time spent waiting for the user's answer does not count.
+        keepAlive: () => {
+          current.since = Date.now();
+        },
+      });
+    } catch (e) {
+      flow = Promise.reject(e);
+    }
+    flow
       .catch(
         (e: unknown): Outcome => ({
           kind: 'failed',
@@ -59,16 +95,24 @@ export function startGestures(): void {
         }),
       )
       .then(outcome => {
-        if (busy !== current) {
-          return; // abandoned; a newer stroke owns the host now
+        if (abandoned) {
+          // A newer stroke owns the host now.
+          unsettled--;
+          if (unsettled === 0 && !busy) {
+            release(waiting, trace);
+          }
+          return;
         }
         trace(`took ${Date.now() - current.since} ms`);
-        status.setLast(outcome, lines);
-        device.release();
+        finish(outcome);
         busy = null;
-        if (waiting.length > 0) {
-          const next = waiting;
-          waiting = [];
+        const next = waiting;
+        waiting = [];
+        // Before the next stroke wraps its elements, so they are not freed.
+        if (unsettled === 0) {
+          release(next, trace);
+        }
+        if (next.length > 0) {
           handle(next);
         }
       });

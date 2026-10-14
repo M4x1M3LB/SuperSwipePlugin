@@ -84,6 +84,11 @@ function App(): React.JSX.Element {
 
       <Text style={styles.status}>{describeOutcome(s.lastOutcome())}</Text>
       <Text style={styles.traceLine}>Strokes received: {s.penUpCount()}</Text>
+      <Text style={styles.traceLine}>{s.pageReadSummary()}</Text>
+      <Text style={styles.traceLine}>
+        Screen listeners: {s.listenerCount()}. Pen events by action:{' '}
+        {s.motionSummary()}
+      </Text>
       {s.history().length > 1 && (
         <View style={styles.trace}>
           <Text style={styles.traceLine}>Recent strokes:</Text>
