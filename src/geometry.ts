@@ -382,77 +382,102 @@ export function strokesTouch(a: Pt[], b: Pt[], tolerance: number): boolean {
   return reaches(a, b, toleranceSq) || reaches(b, a, toleranceSq);
 }
 
-export interface SpiralOptions {
+export interface DoubleLoopOptions {
   /** Minimum number of sample points. */
   minPoints: number;
-  /** How far the stroke must turn in total, in degrees (540 = 1½ turns). */
-  minTurnDegrees: number;
   /**
-   * The outer end must be at least this many times further from the centre
-   * than the inner end: a spiral grows, a loop drawn twice does not.
+   * A loop is where the stroke crosses itself; it only counts when it
+   * encloses at least this fraction of the stroke's bounding box (so hand
+   * tremor and tiny curls do not count).
    */
-  minGrowth: number;
-  /** Fraction of the points at each end used to measure its distance. */
-  endFraction: number;
-  /** Size limits of the spiral's box, in px (checked on the page copy). */
+  minLoopArea: number;
+  /**
+   * The two loops must sit side by side: centres at least this many times
+   * the larger loop's size apart (a circle drawn twice has its two passes on
+   * top of each other).
+   */
+  minLoopSpacing: number;
+  /** Size limits of the mark's box, in px (checked on the page copy). */
   minSize: number;
   maxSize: number;
 }
 
-export const DEFAULT_SPIRAL_OPTIONS: SpiralOptions = {
+export const DEFAULT_DOUBLE_LOOP_OPTIONS: DoubleLoopOptions = {
   minPoints: 15,
-  minTurnDegrees: 540,
-  minGrowth: 2,
-  endFraction: 0.15,
+  minLoopArea: 0.04,
+  minLoopSpacing: 0.4,
   minSize: 20,
   maxSize: 300,
 };
 
 /**
- * Is the stroke a spiral (a snail shell), drawn from the inside out or from
- * the outside in, either way round? Returns its bounding box, or why not.
+ * Is the stroke a double loop: exactly two loops side by side, each closed
+ * where the stroke crosses itself (a pigtail, a cursive "ll")? Returns its
+ * bounding box, or why not.
  *
- * Turning and growth do not depend on the coordinate system, rotation or
+ * Crossings and loops do not depend on the coordinate system, rotation or
  * scale, so with `checkSize` false the check works on the pen-up copy.
  */
-export function checkSpiral(
+export function checkDoubleLoop(
   points: Pt[],
-  options: SpiralOptions = DEFAULT_SPIRAL_OPTIONS,
+  options: DoubleLoopOptions = DEFAULT_DOUBLE_LOOP_OPTIONS,
   checkSize = true,
 ): {box: Box} | {reason: string} {
   if (points.length < options.minPoints) {
     return {reason: 'too few points'};
   }
-  const turned = Math.abs(netTurning(points));
-  if (turned < options.minTurnDegrees) {
-    return {
-      reason: `turns ${Math.round(turned)}° (needs ${options.minTurnDegrees}°)`,
-    };
-  }
-  const centre = points.reduce(
-    (acc, p) => ({
-      x: acc.x + p.x / points.length,
-      y: acc.y + p.y / points.length,
-    }),
-    {x: 0, y: 0},
-  );
-  const k = Math.max(1, Math.floor(points.length * options.endFraction));
-  const meanDistance = (pts: Pt[]) =>
-    pts.reduce((sum, p) => sum + distance(p, centre), 0) / pts.length;
-  const a = meanDistance(points.slice(0, k));
-  const b = meanDistance(points.slice(points.length - k));
-  const growth = Math.max(a, b) / Math.max(1e-9, Math.min(a, b));
-  if (growth < options.minGrowth) {
-    return {reason: `does not grow like a spiral (×${growth.toFixed(1)})`};
-  }
   const box = boundingBox(points);
+  const boxArea = Math.max(
+    1e-9,
+    (box.right - box.left) * (box.bottom - box.top),
+  );
+  // Thin the path so jitter between nearby samples does not cross itself.
+  const step = Math.max(1e-9, pathLength(points) / 80);
+  const path = [points[0]];
+  for (const p of points) {
+    if (distance(path[path.length - 1], p) >= step) {
+      path.push(p);
+    }
+  }
+
+  // Each self-crossing closes a loop: the path between the two segments.
+  const loops: {from: number; to: number; polygon: Pt[]}[] = [];
+  for (let i = 0; i + 1 < path.length; i++) {
+    for (let j = i + 2; j + 1 < path.length; j++) {
+      if (!segmentsIntersect(path[i], path[i + 1], path[j], path[j + 1])) {
+        continue;
+      }
+      const polygon = path.slice(i + 1, j + 1);
+      if (polygonArea(polygon) < options.minLoopArea * boxArea) {
+        continue;
+      }
+      // The same loop can be found by a few neighbouring segment pairs.
+      const overlapping = loops.some(l => i < l.to && j > l.from);
+      if (!overlapping) {
+        loops.push({from: i, to: j, polygon});
+      }
+    }
+  }
+  if (loops.length !== 2) {
+    return {reason: `${loops.length} loop(s), needs exactly 2`};
+  }
+  const [a, b] = loops.map(l => boundingBox(l.polygon));
+  const centre = (r: Box) => ({
+    x: (r.left + r.right) / 2,
+    y: (r.top + r.bottom) / 2,
+  });
+  const size = (r: Box) => Math.max(r.right - r.left, r.bottom - r.top);
+  const spacing = distance(centre(a), centre(b)) / Math.max(size(a), size(b));
+  if (spacing < options.minLoopSpacing) {
+    return {reason: 'loops on top of each other (a circle drawn twice?)'};
+  }
   if (checkSize) {
-    const size = Math.max(box.right - box.left, box.bottom - box.top);
-    if (size < options.minSize) {
+    const markSize = size(box);
+    if (markSize < options.minSize) {
       return {reason: 'too small'};
     }
-    if (size > options.maxSize) {
-      return {reason: `too big (${Math.round(size)} px)`};
+    if (markSize > options.maxSize) {
+      return {reason: `too big (${Math.round(markSize)} px)`};
     }
   }
   return {box};
@@ -466,14 +491,20 @@ export interface WritingLineOptions {
   bandScale: number;
   /** ...and at least this many px, for a small mark. */
   minBandHalf: number;
-  /** Minimum gap between the mark and the writing, in px. */
+  /** Minimum gap between the mark and the writing, in px... */
   minGap: number;
+  /**
+   * ...or this many mark heights, whichever is larger: wider than the space
+   * between two words, so a word written next to the line is not a mark.
+   */
+  minGapRatio: number;
 }
 
 export const DEFAULT_WRITING_LINE_OPTIONS: WritingLineOptions = {
   bandScale: 0.9,
-  minBandHalf: 30,
+  minBandHalf: 36,
   minGap: 0,
+  minGapRatio: 0.75,
 };
 
 /**
@@ -495,23 +526,31 @@ export function findWritingLine(
     options.bandScale * (mark.bottom - mark.top),
   );
   const other = side === 'right' ? 'left' : 'right';
+  const gap = Math.max(
+    options.minGap,
+    options.minGapRatio * (mark.bottom - mark.top),
+  );
   const indices: number[] = [];
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
     if (Math.abs((b.top + b.bottom) / 2 - centre) > half) {
       continue;
     }
-    const onSide =
-      side === 'right'
-        ? b.left >= mark.right + options.minGap
-        : b.right <= mark.left - options.minGap;
-    if (!onSide) {
+    const distanceOut =
+      side === 'right' ? b.left - mark.right : mark.left - b.right;
+    if (distanceOut < gap) {
       const onOther =
         side === 'right' ? b.right <= mark.left : b.left >= mark.right;
+      if (onOther) {
+        return {reason: `writing on the ${other} of the mark`};
+      }
       return {
-        reason: onOther
-          ? `writing on the ${other} of the mark`
-          : 'mark touches the writing',
+        reason:
+          distanceOut < 0
+            ? 'mark touches the writing'
+            : `mark too close to the writing (${Math.round(
+                distanceOut,
+              )} px, needs ${Math.round(gap)})`,
       };
     }
     indices.push(i);

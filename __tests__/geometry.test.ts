@@ -2,7 +2,7 @@ import {
   DEFAULT_LOOP_OPTIONS,
   findClosedLoop,
   netTurning,
-  checkSpiral,
+  checkDoubleLoop,
   findWritingLine,
   strokesTouch,
   fractionInside,
@@ -158,71 +158,84 @@ describe('polygon helpers', () => {
   });
 });
 
-/** A spiral around (cx, cy): radius r0 → r1 over `turns` turns. */
-function spiral(
+/**
+ * A pigtail: a prolate cycloid with `loops` loops, drawn left to right,
+ * 2b px tall, loops 2πa px apart.
+ */
+function pigtail(
   cx: number,
   cy: number,
-  r0: number,
-  r1: number,
-  turns: number,
+  a: number,
+  b: number,
+  loops = 2,
   n = 120,
 ): Pt[] {
+  const t0 = Math.PI;
+  const t1 = t0 + loops * 2 * Math.PI;
   return Array.from({length: n + 1}, (_, i) => {
-    const t = i / n;
-    const a = t * turns * 2 * Math.PI;
-    const r = r0 + (r1 - r0) * t;
-    return {x: cx + r * Math.cos(a), y: cy + r * Math.sin(a)};
+    const t = t0 + ((t1 - t0) * i) / n;
+    return {x: cx + a * (t - t0) - b * Math.sin(t), y: cy - b * Math.cos(t)};
   });
 }
 
-describe('checkSpiral', () => {
-  it('recognises a snail shell drawn from the inside out', () => {
-    expect(checkSpiral(spiral(60, 520, 3, 20, 2))).toEqual({
-      box: expect.objectContaining({}),
+describe('checkDoubleLoop', () => {
+  it('recognises a pigtail with two loops', () => {
+    expect(checkDoubleLoop(pigtail(40, 520, 5, 15))).toHaveProperty('box');
+  });
+
+  it('recognises it drawn right to left, or with tight loops', () => {
+    const reversed = pigtail(40, 520, 5, 15).reverse();
+    expect(checkDoubleLoop(reversed)).toHaveProperty('box');
+    expect(checkDoubleLoop(pigtail(40, 520, 3, 15))).toHaveProperty('box');
+  });
+
+  it('tolerates a shaky hand', () => {
+    const shaky = pigtail(40, 520, 5, 15).map((p, i) => ({
+      x: p.x + ((i * 7) % 3) - 1,
+      y: p.y + ((i * 5) % 3) - 1,
+    }));
+    expect(checkDoubleLoop(shaky)).toHaveProperty('box');
+  });
+
+  it('needs exactly two loops', () => {
+    expect(checkDoubleLoop(pigtail(40, 520, 5, 15, 1))).toEqual({
+      reason: '1 loop(s), needs exactly 2',
     });
-  });
-
-  it('recognises it from the outside in, and the other way round', () => {
-    const outsideIn = spiral(60, 520, 20, 3, 2);
-    expect(checkSpiral(outsideIn)).toHaveProperty('box');
-    const mirrored = outsideIn.map(p => ({x: 120 - p.x, y: p.y}));
-    expect(checkSpiral(mirrored)).toHaveProperty('box');
-  });
-
-  it('accepts a quick one-and-a-half turn spiral', () => {
-    expect(checkSpiral(spiral(60, 520, 4, 18, 1.6, 50))).toHaveProperty('box');
-  });
-
-  it('rejects a single loop and a loop drawn twice (no growth)', () => {
-    expect(checkSpiral(ellipse(60, 520, 20, 20))).toMatchObject({
-      reason: expect.stringContaining('turns'),
+    expect(checkDoubleLoop(pigtail(40, 520, 5, 15, 3))).toEqual({
+      reason: '3 loop(s), needs exactly 2',
     });
-    expect(checkSpiral(ellipse(60, 520, 20, 18, 2, 120))).toMatchObject({
-      reason: expect.stringContaining('does not grow'),
+    expect(checkDoubleLoop(ellipse(60, 520, 20, 20))).toHaveProperty('reason');
+  });
+
+  it('rejects a circle drawn twice (loops on top of each other)', () => {
+    expect(checkDoubleLoop(pigtail(40, 520, 0.5, 15))).toMatchObject({
+      reason: expect.stringContaining('on top of each other'),
     });
   });
 
   it('rejects writing-like strokes', () => {
-    expect(checkSpiral(line({x: 0, y: 0}, {x: 200, y: 0}))).toHaveProperty(
+    expect(
+      checkDoubleLoop(line({x: 0, y: 0}, {x: 200, y: 0})),
+    ).toHaveProperty('reason');
+    expect(checkDoubleLoop(ellipse(60, 520, 20, 20, 0.5))).toHaveProperty(
       'reason',
     );
-    expect(checkSpiral(ellipse(60, 520, 20, 20, 0.5))).toHaveProperty('reason');
   });
 
   it('checks size on the page copy only', () => {
-    const big = spiral(500, 500, 20, 200, 2);
-    expect(checkSpiral(big)).toMatchObject({
+    const big = pigtail(100, 500, 50, 150);
+    expect(checkDoubleLoop(big)).toMatchObject({
       reason: expect.stringContaining('too big'),
     });
-    expect(checkSpiral(big, undefined, false)).toHaveProperty('box');
-    expect(checkSpiral(spiral(60, 520, 1, 6, 2))).toEqual({
+    expect(checkDoubleLoop(big, undefined, false)).toHaveProperty('box');
+    expect(checkDoubleLoop(pigtail(40, 520, 1, 3))).toEqual({
       reason: 'too small',
     });
   });
 });
 
 describe('findWritingLine', () => {
-  const mark = {left: 40, top: 500, right: 80, bottom: 540};
+  const mark = {left: 30, top: 500, right: 70, bottom: 540};
   const box = (left: number, top: number, w = 30, h = 40) => ({
     left,
     top,
@@ -262,8 +275,16 @@ describe('findWritingLine', () => {
   });
 
   it('refuses a mark touching the writing (a written "x")', () => {
-    expect(findWritingLine(mark, [box(75, 500)])).toEqual({
+    expect(findWritingLine(mark, [box(65, 500)])).toEqual({
       reason: 'mark touches the writing',
+    });
+  });
+
+  it('needs a gap of 0.75 × the mark height from the writing', () => {
+    // Mark 40 px tall: the writing must start 30 px or more after it.
+    expect(findWritingLine(mark, [box(100, 500)])).toEqual({indices: [0]});
+    expect(findWritingLine(mark, [box(90, 500)])).toEqual({
+      reason: 'mark too close to the writing (20 px, needs 30)',
     });
   });
 

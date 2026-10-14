@@ -3,8 +3,9 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin spiral to erase: a small spiral (one stroke) in the margin, level
- *   with a line of writing, erases that line and the spiral.
+ * - Margin double loop to erase: one stroke making two loops side by side
+ *   (a pigtail, or a cursive "ll"), in the margin level with a line of
+ *   writing, erases that line and the mark.
  *
  * This module holds the decision logic only. Every device call goes through
  * the `Host` interface (implemented with sn-plugin-lib in host.ts) so the
@@ -16,7 +17,7 @@ import {
   boundingBox,
   checkClosedLoop,
   findClosedLoop,
-  checkSpiral,
+  checkDoubleLoop,
   findWritingLine,
   fractionInside,
   growPolygon,
@@ -145,8 +146,8 @@ export async function handlePenUp(
   // stroke, newest first, and take the first gesture.
   //
   // Checked on the pen-up copy, so nothing is read from (or saved to) the
-  // page for ordinary writing. The spiral is checked first: it also turns
-  // far enough to pass as a loop.
+  // page for ordinary writing. The double loop is checked first: it also
+  // turns far enough, and closes, to pass as a loop.
   let gesture: PageElement | null = null;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
@@ -156,12 +157,12 @@ export async function handlePenUp(
     const label = ink.length > 1 ? `stroke ${i + 1}/${ink.length}` : 'stroke';
     trace(`${label}: pen ${candidate.penType}, ${pts.length} points`);
     if (gestures.marginErase) {
-      const spiral = checkSpiral(pts, config.spiral, false);
-      if ('box' in spiral) {
+      const double = checkDoubleLoop(pts, config.doubleLoop, false);
+      if ('box' in double) {
         [gesture, points] = [candidate, pts];
         break;
       }
-      trace(`  spiral check: ${spiral.reason}`);
+      trace(`  double-loop check: ${double.reason}`);
     }
     if (gestures.loopSelect) {
       const loop = checkClosedLoop(pts, config.loop);
@@ -175,7 +176,7 @@ export async function handlePenUp(
   if (!gesture) {
     return {kind: 'ignored', reason: 'not a gesture'};
   }
-  trace(polygon ? 'shape: closed loop' : 'shape: spiral');
+  trace(polygon ? 'shape: closed loop' : 'shape: double loop');
 
   const path = await host.getCurrentFilePath();
   if (!path || !/\.note$/i.test(path)) {
@@ -232,13 +233,16 @@ export async function handlePenUp(
     return selectInLoop(ctx, pagePolygon);
   }
 
-  const checked = checkSpiral(stored, config.spiral);
+  const checked = checkDoubleLoop(stored, config.doubleLoop);
   if ('reason' in checked) {
-    return {kind: 'ignored', reason: `spiral on the page: ${checked.reason}`};
+    return {
+      kind: 'ignored',
+      reason: `double loop on the page: ${checked.reason}`,
+    };
   }
   const mark = checked.box;
   trace(
-    `spiral: ${Math.round(mark.right - mark.left)}×${Math.round(
+    `double loop: ${Math.round(mark.right - mark.left)}×${Math.round(
       mark.bottom - mark.top,
     )} px`,
   );
@@ -311,17 +315,19 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
       }
     }
   }
-  // The spiral has no direction: the line is on whichever side it is.
-  // Writing on both sides means the spiral is part of the text.
+  // The mark has no direction: the line is on whichever side it is.
+  // Writing on both sides means the mark is part of the text.
   const boxes = strokes.map(s => s.box);
   const right = findWritingLine(mark, boxes, config.writingLine, 'right');
   const left = findWritingLine(mark, boxes, config.writingLine, 'left');
   const line = 'indices' in right ? right : left;
   if ('reason' in line) {
-    const reason =
-      'reason' in right && right.reason === 'no writing next to the mark'
-        ? right.reason
-        : 'writing on both sides of the spiral, or touching it';
+    const none = 'no writing next to the mark';
+    const reasons = [right, left].map(r => ('reason' in r ? r.reason : none));
+    const tooClose = reasons.find(r => r.startsWith('mark too close'));
+    const reason = reasons.every(r => r === none)
+      ? none
+      : tooClose ?? 'writing on both sides of the mark, or touching it';
     return {kind: 'ignored', reason};
   }
   ctx.trace(`erasing the line on its ${'indices' in right ? 'right' : 'left'}`);

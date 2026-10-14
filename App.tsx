@@ -57,12 +57,13 @@ function App(): React.JSX.Element {
       <Text style={styles.title}>SuperSwipe</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
-        lasso-select them. To erase a line of writing, draw a small spiral (a
-        snail shell) in the margin next to it, left or right.
+        lasso-select them. To erase a line of writing, draw two crossing loops
+        in one stroke (a pigtail, or a cursive "ll") in the margin next to it,
+        left or right, leaving a small gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
-      <Toggle label="Margin spiral to erase" name="marginErase" />
+      <Toggle label="Margin double loop to erase" name="marginErase" />
       <Toggle label="Refresh screen after a gesture" name="screenRefresh" />
 
       <View style={styles.row}>

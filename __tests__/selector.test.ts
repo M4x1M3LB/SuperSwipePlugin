@@ -460,7 +460,7 @@ describe('handlePenUp: device quirks', () => {
   });
 });
 
-describe('handlePenUp: margin spiral to erase', () => {
+describe('handlePenUp: margin double loop to erase', () => {
   beforeEach(() => {
     nextNum = 1;
   });
@@ -470,17 +470,22 @@ describe('handlePenUp: margin spiral to erase', () => {
     return [100, 140, 180, 220].map(x => el(letter(x, top)));
   }
 
-  /** A 40 px snail shell centred on (cx, 520), level with the row at 500. */
-  function shell(cx: number): Pt[] {
+  /**
+   * A pigtail (prolate cycloid) starting at x = left, level with the row at
+   * 500: 63 x 30 px for two loops.
+   */
+  function pigtail(left: number, loops = 2): Pt[] {
     return Array.from({length: 121}, (_, i) => {
-      const t = i / 120;
-      const a = t * 2 * 2 * Math.PI;
-      const r = 3 + 17 * t;
-      return {x: cx + r * Math.cos(a), y: 520 + r * Math.sin(a)};
+      const t = Math.PI + (i / 120) * loops * 2 * Math.PI;
+      return {
+        x: left + 5 * (t - Math.PI) - 15 * Math.sin(t),
+        y: 520 - 15 * Math.cos(t),
+      };
     });
   }
-  const leftShell = shell(60); // x 40..80, before the row
-  const rightShell = shell(320); // x 300..340, after the row
+  // The writing must start 0.75 × 30 = 23 px or more away.
+  const leftShell = pigtail(10); // x 10..73, before the row (x 100..250)
+  const rightShell = pigtail(280); // x 280..343, after the row
 
   it('in the left margin, erases the line on its right, and itself', async () => {
     const above = row(420);
@@ -544,27 +549,27 @@ describe('handlePenUp: margin spiral to erase', () => {
     expect(await host.getPageElements('', 3)).toEqual([]);
   });
 
-  it('is found before the loop check (a spiral turns enough to pass as one)', async () => {
+  it('is found before the loop check', async () => {
     const lines: string[] = [];
     const mark = el(leftShell);
     await handlePenUp([mark], fakeHost([...row(500), mark]), DEFAULT_CONFIG, {
       trace: l => lines.push(l),
     });
-    expect(lines).toContain('shape: spiral');
+    expect(lines).toContain('shape: double loop');
   });
 
-  it('leaves a spiral inside a line of writing alone', async () => {
-    const mark = el(shell(180)); // in the middle of the row
+  it('leaves a double loop inside a line of writing alone', async () => {
+    const mark = el(pigtail(100)); // between two words
     const host = fakeHost([el(word(0, 515, 25)), el(word(260, 515, 40)), mark]);
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'writing on both sides of the spiral, or touching it',
+      reason: 'writing on both sides of the mark, or touching it',
     });
     expect(host.deleted).toEqual([]);
   });
 
-  it('leaves a spiral with nothing next to it as ink', async () => {
+  it('leaves a double loop with nothing next to it as ink', async () => {
     const mark = el(leftShell);
     const host = fakeHost([...row(700), mark]);
 
@@ -574,7 +579,7 @@ describe('handlePenUp: margin spiral to erase', () => {
     });
   });
 
-  it('a circle drawn twice around a word is still a loop, not a spiral', async () => {
+  it('a circle drawn twice around a word is still a loop', async () => {
     const twice = Array.from({length: 161}, (_, i) => {
       const a = (i / 80) * 2 * Math.PI;
       return {x: 520 + 200 * Math.cos(a), y: 500 + 120 * Math.sin(a)};
@@ -587,13 +592,34 @@ describe('handlePenUp: margin spiral to erase', () => {
     });
   });
 
-  it('says in the trace why a stroke is not a spiral', async () => {
+  it('says in the trace why a stroke is not a double loop', async () => {
     const stroke = el(word(100, 100, 200));
     const lines: string[] = [];
     await handlePenUp([stroke], fakeHost([stroke]), DEFAULT_CONFIG, {
       trace: l => lines.push(l),
     });
-    expect(lines.join('\n')).toContain('spiral check:');
+    expect(lines.join('\n')).toContain('double-loop check:');
+  });
+
+  it('leaves a double loop written too close to the line alone', async () => {
+    const mark = el(pigtail(30)); // x 30..93, 7 px before the row
+    const host = fakeHost([...row(500), mark]);
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'mark too close to the writing (7 px, needs 23)',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('does not erase on three loops in a row (cursive "lll")', async () => {
+    const three = el(pigtail(10, 3));
+    const host = fakeHost([...row(500), three]);
+
+    expect(await handlePenUp([three], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+    });
+    expect(host.deleted).toEqual([]);
   });
 
   it('respects the per-gesture switches', async () => {
