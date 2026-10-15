@@ -11,8 +11,8 @@ A Supernote plugin for NOTE files, with four pen gestures:
 - **Margin bar to select:** draw a vertical stroke (|, [ or a gentle ( )
   in the margin beside some lines, from the first to the last; that block
   of writing is selected and the bar disappears.
-- **Margin wave to erase:** draw a sideways wave with three bounces or more
-  (∿∿, a tilde with an extra bounce) in the margin next to a line of
+- **Margin wave to erase:** draw a sideways wave with five bounces or more
+  (∿∿∿, three waves) in the margin next to a line of
   writing, left or right, and that whole line is erased, with the wave.
 
 Built with the official plugin framework (React Native 0.79.2,
@@ -104,11 +104,15 @@ Margin bar to select:
 Margin wave to erase:
 
 - One stroke that runs sideways (left to right or right to left, never
-  going back on itself) and turns between up and down at least 3 times: a
-  tilde "~" turns twice, so it stays ink. Each bounce must turn back by a
+  going back on itself) and turns between up and down at least 5 times
+  (∿∿∿): a tilde "~" turns twice, and an "m" or a "w" 3 or 4 times, so they
+  stay ink. Each bounce must turn back by a
   quarter of the wave's height or more, so a shaky line is not a wave. Wider
   than tall, not flat as a line, 20–400 px wide.
 - A loop always goes back on itself, so it can never be taken for the wave.
+- Not part of a word: a wave followed by more strokes in the same burst, or
+  with the pen touching the screen again before the erase (the next
+  letter), stays ink.
 - Leave a gap: the writing must start at least 20 px (or 0.75 × the wave's
   height) away, so a wavy word written right after the line does not erase
   it.
@@ -130,8 +134,14 @@ Margin wave to erase:
   repaints the page. Only once the saved file has been read back and no
   longer holds the erased strokes (a reload that reads the file before a
   save has finished brings old strokes back), and only if the pen was not
-  used since the save (it would be lost). Selections are not followed by a
-  refresh: it is slow and would drop the selection.
+  used since the save (it would be lost).
+
+No ghosts after deleting a selection: the plugin remembers what each
+gesture selected. If those strokes are gone at the next selection on the
+page (deleted with the lasso toolbar), the device could repaint from a
+stale picture of the page and show them again, so the gesture stroke is
+removed, checked and the note reloaded (same safety rules) before
+selecting. Otherwise selections skip the refresh: it is slow.
 
 ## Limitations (Supernote SDK)
 
@@ -158,7 +168,7 @@ Margin wave to erase:
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.25.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.26.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

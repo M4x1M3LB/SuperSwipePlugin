@@ -15,7 +15,7 @@ import {
 
 export interface SelectorConfig {
   loop: LoopOptions;
-  /** The margin wave: a sideways wave with 3 bounces or more ("∿∿"). */
+  /** The margin wave: a sideways wave with 5 bounces or more ("∿∿∿"). */
   wave: WaveOptions;
   /** The separator line: straight, horizontal. */
   straightLine: StraightLineOptions;

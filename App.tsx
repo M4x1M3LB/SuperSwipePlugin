@@ -61,9 +61,8 @@ function App(): React.JSX.Element {
         and clear of the writing, selects what is above or below it (you are
         asked which when there is writing on both sides). A vertical bar in the
         margin beside some lines selects that block. To erase a line of writing,
-        draw a sideways wave with three bounces or more (∿∿, a tilde with an
-        extra bounce) in the margin next to it, left or right, leaving a small
-        gap.
+        draw a sideways wave with five bounces or more (∿∿∿, three waves) in the
+        margin next to it, left or right, leaving a small gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />

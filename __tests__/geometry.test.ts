@@ -186,7 +186,7 @@ function wave(
   cy: number,
   width: number,
   amp: number,
-  span = 3 * Math.PI,
+  span = 5 * Math.PI,
   n = 60,
 ): Pt[] {
   return Array.from({length: n + 1}, (_, i) => {
@@ -196,7 +196,7 @@ function wave(
 }
 
 describe('checkWave', () => {
-  it('recognises a tilde with an extra bounce', () => {
+  it('recognises a wave with 5 bounces (∿∿∿)', () => {
     expect(checkWave(wave(10, 520, 60, 12))).toEqual({
       box: expect.objectContaining({left: 10, right: 70}),
     });
@@ -218,9 +218,18 @@ describe('checkWave', () => {
     expect(checkWave(shaky)).toHaveProperty('box');
   });
 
+  it('rejects an "m", a "w" and a ∿∿ (3 or 4 bounces)', () => {
+    expect(checkWave(wave(10, 520, 60, 12, 4 * Math.PI))).toEqual({
+      reason: '4 bounce(s), needs 5 or more',
+    });
+    expect(checkWave(wave(10, 520, 60, 12, 3 * Math.PI))).toEqual({
+      reason: '3 bounce(s), needs 5 or more',
+    });
+  });
+
   it('rejects a plain tilde', () => {
     expect(checkWave(wave(10, 520, 60, 12, 2 * Math.PI))).toEqual({
-      reason: '2 bounce(s), needs 3 or more',
+      reason: '2 bounce(s), needs 5 or more',
     });
   });
 

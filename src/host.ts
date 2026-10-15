@@ -587,6 +587,8 @@ export function createHost(
   // Which way points were read for this stroke, traced once each.
   let tracedDirect = false;
   let tracedFallback = false;
+  // What the last gesture selected, to spot it being deleted (ghosts).
+  let selection: {path: string; page: number; uuids: string[]} | null = null;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
   // Both file permissions were "always allow" at the last check: no need to
@@ -923,6 +925,14 @@ export function createHost(
         fileCallFailed('reloadFile');
       }
       return ok;
+    },
+
+    rememberSelection(next) {
+      selection = next;
+    },
+
+    lastSelection() {
+      return selection;
     },
 
     penDownCount() {

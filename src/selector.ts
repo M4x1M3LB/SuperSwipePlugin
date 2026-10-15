@@ -3,8 +3,8 @@
  *
  * - Loop to select: a closed loop around existing content is removed and
  *   what it enclosed is lasso-selected.
- * - Margin wave to erase: a sideways wave with 3 bounces or more ("∿∿", a
- *   tilde with an extra bounce), in the margin level with a line of
+ * - Margin wave to erase: a sideways wave with 5 bounces or more ("∿∿∿"),
+ *   in the margin level with a line of
  *   writing, erases that line and the wave.
  * - Line to select: a straight horizontal line, a few words long or more,
  *   clear of the writing, selects everything above or below it (asking
@@ -91,6 +91,14 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /**
+   * Remember the strokes a gesture just selected (null to forget), so the
+   * next gesture can tell whether they were deleted with the lasso toolbar.
+   */
+  rememberSelection(
+    selection: {path: string; page: number; uuids: string[]} | null,
+  ): void;
+  lastSelection(): {path: string; page: number; uuids: string[]} | null;
   /** How many times the pen has touched the screen so far. */
   penDownCount(): number;
   /** Ask the user which side of a line to select; null if unanswered. */
@@ -142,6 +150,11 @@ interface Context {
   isCancelled: () => boolean;
   trace: (line: string) => void;
   screenRefresh: boolean;
+  /**
+   * Strokes selected by the last gesture were deleted since: the device may
+   * repaint this page from a stale picture (ghosts), so refresh it.
+   */
+  staleScreen: boolean;
   /** The page size, when already read or being read. */
   size?: Promise<PageSize | null>;
 }
@@ -188,6 +201,9 @@ export async function handlePenUp(
   // match the page's, so a wave running either way passes here; the page
   // copy decides.
   let gesture: PageElement | null = null;
+  // Where a wave was found in the event: one followed by more strokes is a
+  // letter ("m", "w") with the rest of the word coming.
+  let waveIndex = -1;
   let points: Pt[] = [];
   let polygon: Pt[] | null = null;
   // A line or a bar: the pen-up copy may be turned a quarter, so which one
@@ -241,6 +257,7 @@ export async function handlePenUp(
           'box' in checkWave(swapAxes(pts), config.wave, false))
       ) {
         [gesture, points] = [candidate, pts];
+        waveIndex = i;
         break;
       }
       trace(`  wave check: ${wave.reason}`);
@@ -328,6 +345,15 @@ export async function handlePenUp(
       ? 'shape: line or bar'
       : 'shape: wave',
   );
+
+  if (waveIndex >= 0 && waveIndex < ink.length - 1) {
+    trace('wave: followed in the same burst (no page read)');
+    return {kind: 'ignored', reason: 'wave followed by more writing'};
+  }
+  if (waveIndex >= 0 && host.penDownCount() !== downsAtStart) {
+    trace('wave: pen down again (no page read)');
+    return {kind: 'ignored', reason: 'kept writing after the wave'};
+  }
 
   // A bar followed by more writing is ink (a brace and its label): the
   // page check would refuse it, so do not read the page for it.
@@ -428,6 +454,7 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
+    staleScreen: selectionDeleted(host, path, page, elements, trace),
     size,
   };
   if (isStraight) {
@@ -481,7 +508,7 @@ export async function handlePenUp(
       mark.bottom - mark.top,
     )} px`,
   );
-  const erased = await eraseNextToMark(ctx, mark);
+  const erased = await eraseNextToMark(ctx, mark, downsAtStart);
   if (
     erased.kind !== 'ignored' ||
     erased.reason !== NO_WRITING ||
@@ -643,7 +670,7 @@ function fmt(p: Pt | undefined): string {
 }
 
 async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
-  const {host, config, page, stroke} = ctx;
+  const {config} = ctx;
   // Selection is generous: the loop is grown outward a little, so strokes it
   // grazes or slightly cuts through still count.
   const area = growPolygon(polygon, config.loopMargin);
@@ -685,19 +712,9 @@ async function selectInLoop(ctx: Context, polygon: Pt[]): Promise<Outcome> {
   if (blocked) {
     return blocked;
   }
-  // One stroke: no need to save and read the page back to check, and no
-  // reload (slow, and it would drop the selection). Speed matters here.
-  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
-    return {kind: 'failed', reason: 'could not remove loop stroke'};
-  }
-  ctx.trace('loop stroke removed');
-
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
-  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
-  if (!(await host.lassoRect(rect))) {
-    return {kind: 'failed', reason: 'could not create lasso selection'};
-  }
-  return {kind: 'selected', count: boxes.length, rect};
+  const failed = await removeAndSelect(ctx, rect, 'loop stroke');
+  return failed ?? {kind: 'selected', count: boxes.length, rect};
 }
 
 /**
@@ -709,7 +726,7 @@ async function selectBesideBar(
   bar: Box,
   downsAtStart: number,
 ): Promise<Outcome> {
-  const {host, config, page, stroke} = ctx;
+  const {host, config, stroke} = ctx;
   // The pen count only grows: once it changed, the outcome is decided.
   const keptWriting: Outcome = {
     kind: 'ignored',
@@ -778,10 +795,6 @@ async function selectBesideBar(
   if (host.penDownCount() !== downsAtStart) {
     return keptWriting;
   }
-  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
-    return {kind: 'failed', reason: 'could not remove the bar'};
-  }
-  ctx.trace('bar removed');
   // Stretched over where the bar was, so the device repaints that strip:
   // nothing level with the bar sits there.
   const union = unionBoxes(chosen)!;
@@ -790,11 +803,8 @@ async function selectBesideBar(
       ? {...union, left: Math.min(union.left, bar.left)}
       : {...union, right: Math.max(union.right, bar.right)};
   const rect = padAndClamp(stretched, config.lassoPadding, size);
-  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
-  if (!(await host.lassoRect(rect))) {
-    return {kind: 'failed', reason: 'could not create lasso selection'};
-  }
-  return {kind: 'selected', count: chosen.length, rect};
+  const failed = await removeAndSelect(ctx, rect, 'bar');
+  return failed ?? {kind: 'selected', count: chosen.length, rect};
 }
 
 /**
@@ -807,7 +817,7 @@ async function selectBesideLine(
   line: {from: Pt; to: Pt},
   keepAlive: () => void,
 ): Promise<Outcome> {
-  const {host, config, page, stroke} = ctx;
+  const {host, config} = ctx;
   const size = await pageSizeOf(ctx);
   if (!size) {
     return {kind: 'failed', reason: 'page size unavailable'};
@@ -884,16 +894,10 @@ async function selectBesideLine(
   if (blocked) {
     return blocked;
   }
-  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
-    return {kind: 'failed', reason: 'could not remove the line'};
-  }
-  ctx.trace(`line removed, selecting ${side}`);
+  ctx.trace(`selecting ${side}`);
   const rect = padAndClamp(enclosed, config.lassoPadding, size);
-  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
-  if (!(await host.lassoRect(rect))) {
-    return {kind: 'failed', reason: 'could not create lasso selection'};
-  }
-  return {kind: 'selected', count: chosen.length, rect};
+  const failed = await removeAndSelect(ctx, rect, 'line');
+  return failed ?? {kind: 'selected', count: chosen.length, rect};
 }
 
 /**
@@ -901,7 +905,11 @@ async function selectBesideLine(
  * writing is), the strokes
  * touching it (a "t" bar, a descender), and the mark.
  */
-async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
+async function eraseNextToMark(
+  ctx: Context,
+  mark: Box,
+  downsAtStart: number,
+): Promise<Outcome> {
   const {host, config, path, page, stroke} = ctx;
   const candidates = ctx.others.filter(e => e.type === STROKE);
   const outlines = await outlinesOf(candidates);
@@ -955,6 +963,11 @@ async function eraseNextToMark(ctx: Context, mark: Box): Promise<Outcome> {
   const blocked = await checkBeforeEdit(ctx);
   if (blocked) {
     return blocked;
+  }
+  // The pen touched the screen again: the wave was a letter ("m", "w")
+  // and the word goes on.
+  if (host.penDownCount() !== downsAtStart) {
+    return {kind: 'ignored', reason: 'kept writing after the wave'};
   }
   const removed = await deleteVerified(ctx, [...erased, stroke]);
   if (!removed.deleted) {
@@ -1032,6 +1045,81 @@ async function deleteVerified(
     left = await stillThere();
   }
   return {deleted: true, fileClean: left.length === 0};
+}
+
+/**
+ * Did the user delete what the last gesture selected on this page (with the
+ * lasso toolbar)? Then the device may repaint from a stale picture of the
+ * page, bringing the deleted strokes back on screen. Forgets the selection
+ * once checked.
+ */
+function selectionDeleted(
+  host: Host,
+  path: string,
+  page: number,
+  elements: PageElement[],
+  trace: (line: string) => void,
+): boolean {
+  const last = host.lastSelection();
+  if (!last || last.path !== path || last.page !== page) {
+    return false;
+  }
+  host.rememberSelection(null);
+  const present = new Set(elements.map(e => e.uuid));
+  const gone = last.uuids.filter(u => !present.has(u)).length;
+  if (gone > 0) {
+    trace(`last selection: ${gone} of ${last.uuids.length} stroke(s) deleted`);
+  }
+  return gone > 0;
+}
+
+/**
+ * Remove the gesture stroke, then lasso `rect`, and remember what was
+ * selected. Fast (one delete, no reload) unless the screen may be stale:
+ * then the delete is checked and the note reloaded before selecting.
+ * Returns the failure, if any.
+ */
+async function removeAndSelect(
+  ctx: Context,
+  rect: Box,
+  name: string,
+): Promise<Outcome | null> {
+  const {host, path, page, stroke} = ctx;
+  if (ctx.staleScreen && ctx.screenRefresh) {
+    ctx.trace('refreshing the screen first (against ghosts)');
+    const removed = await deleteVerified(ctx, [stroke]);
+    if (!removed.deleted) {
+      return {kind: 'failed', reason: `could not remove the ${name}`};
+    }
+    await repaint(ctx, removed.fileClean);
+  } else if (
+    !(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))
+  ) {
+    return {kind: 'failed', reason: `could not remove the ${name}`};
+  }
+  ctx.trace(`${name} removed`);
+  ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
+  if (!(await host.lassoRect(rect))) {
+    return {kind: 'failed', reason: 'could not create lasso selection'};
+  }
+  // What the lasso holds: the elements whose box meets it.
+  const outlines = await outlinesOf(ctx.others);
+  const uuids = ctx.others
+    .filter((_, i) => {
+      if (outlines[i].length === 0) {
+        return false;
+      }
+      const b = boundingBox(outlines[i]);
+      return (
+        b.left <= rect.right &&
+        b.right >= rect.left &&
+        b.top <= rect.bottom &&
+        b.bottom >= rect.top
+      );
+    })
+    .map(e => e.uuid);
+  host.rememberSelection({path, page, uuids});
+  return null;
 }
 
 /**

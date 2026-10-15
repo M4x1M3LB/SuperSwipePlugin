@@ -71,6 +71,7 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   remembered: PageElement[][];
+  selection: {path: string; page: number; uuids: string[]} | null;
   /** Calls in order: 'delete', 'reload', 'lasso', 'ask'. */
   calls: string[];
 }
@@ -84,6 +85,7 @@ function fakeHost(
   let current = [...page];
   const host: FakeHost = {
     deleted: [],
+    selection: null,
     lassoed: [],
     remembered: [],
     calls: [],
@@ -123,6 +125,10 @@ function fakeHost(
       return true;
     },
     penDownCount: () => 0,
+    rememberSelection: next => {
+      host.selection = next;
+    },
+    lastSelection: () => host.selection,
     askAboveOrBelow: async () => {
       host.calls.push('ask');
       return 'below';
@@ -471,8 +477,8 @@ describe('handlePenUp: margin wave to erase', () => {
     return [100, 140, 180, 220].map(x => el(letter(x, top)));
   }
 
-  /** A 60 x 24 px wave with 3 bounces from x = left, level with the row. */
-  function wave(left: number, span = 3 * Math.PI): Pt[] {
+  /** A 60 x 24 px wave with 5 bounces from x = left, level with the row. */
+  function wave(left: number, span = 5 * Math.PI): Pt[] {
     return Array.from({length: 61}, (_, i) => ({
       x: left + i,
       y: 520 - 12 * Math.sin((span * i) / 60),
@@ -647,6 +653,34 @@ describe('handlePenUp: margin wave to erase', () => {
     });
   });
 
+  it('leaves an "m" with the rest of the word in the same burst as ink', async () => {
+    const m = el(leftShell);
+    const next = el(letter(80, 500));
+    const host = fakeHost([...row(500), m, next]);
+
+    expect(await handlePenUp([m, next], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'wave followed by more writing',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
+  it('does not erase when the pen goes on writing (the next letter)', async () => {
+    const mark = el(leftShell);
+    const host = fakeHost([...row(500), mark]);
+    let downs = 0;
+    host.penDownCount = () => downs;
+    host.waitForPenUp = async () => {
+      downs++; // the next letter starts while the page is read
+    };
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'kept writing after the wave',
+    });
+    expect(host.deleted).toEqual([]);
+  });
+
   it('finds a wave whose pen-up copy has its axes swapped', async () => {
     const mark = el(leftShell);
     const penUp = el(leftShell.map(p => ({x: p.y, y: p.x})));
@@ -758,10 +792,10 @@ describe('handlePenUp: line to select above or below', () => {
   });
 
   it('takes a wobbly line for a line, even when it passes for a wave', async () => {
-    // 800 x 110 px, 3 bounces: wave-shaped, but far too wide for a wave.
+    // 800 x 110 px, 5 bounces: wave-shaped, but far too wide for a wave.
     const wobbly = Array.from({length: 121}, (_, i) => ({
       x: 100 + (800 * i) / 120,
-      y: 800 - 55 * Math.sin((3 * Math.PI * i) / 120),
+      y: 800 - 55 * Math.sin((5 * Math.PI * i) / 120),
     }));
     const line = el(wobbly);
     const host = fakeHost([el(word(100, 600)), line]);
@@ -816,11 +850,11 @@ describe('handlePenUp: line to select above or below', () => {
   });
 
   it('takes a short wobbly line for a line when nothing is level with it', async () => {
-    // 260 x 32 px with 3 bounces: passes for a wave, but has no writing
+    // 260 x 32 px with 5 bounces: passes for a wave, but has no writing
     // beside it to erase.
     const wobbly = Array.from({length: 61}, (_, i) => ({
       x: 100 + (260 * i) / 60,
-      y: 800 - 16 * Math.sin((3 * Math.PI * i) / 60),
+      y: 800 - 16 * Math.sin((5 * Math.PI * i) / 60),
     }));
     const line = el(wobbly);
     const host = fakeHost([el(word(100, 600)), line]);
@@ -1056,12 +1090,12 @@ describe('handlePenUp: no page read for what cannot be a gesture', () => {
   });
 
   it('leaves a tiny wavy scribble alone', async () => {
-    // 15 x 6 px with 3 bounces: a wave on the pen-up copy, too small for
+    // 15 x 6 px with 5 bounces: a wave on the pen-up copy, too small for
     // any gesture on the page (a wave is at least 20 px wide).
     const scribble = el(
       Array.from({length: 31}, (_, i) => ({
         x: 300 + i / 2,
-        y: 500 - 3 * Math.sin((3 * Math.PI * i) / 30),
+        y: 500 - 3 * Math.sin((5 * Math.PI * i) / 30),
       })),
     );
     const {host, getPageElements, getCurrentFilePath} = watchedHost([
@@ -1300,7 +1334,7 @@ describe('handlePenUp: fewer and parallel device calls', () => {
     const mark = el(
       Array.from({length: 61}, (_, i) => ({
         x: 10 + i,
-        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+        y: 520 - 12 * Math.sin((5 * Math.PI * i) / 60),
       })),
     );
     const host = fakeHost([...letters, ...words, mark]);
@@ -1323,7 +1357,7 @@ describe('handlePenUp: fewer and parallel device calls', () => {
     const mark = plainEl(
       Array.from({length: 61}, (_, i) => ({
         x: 10 + i,
-        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+        y: 520 - 12 * Math.sin((5 * Math.PI * i) / 60),
       })),
     );
     const host = fakeHost([...letters, plainEl(word(100, 800)), mark]);
@@ -1346,7 +1380,7 @@ describe('handlePenUp: fewer and parallel device calls', () => {
     const mark = el(
       Array.from({length: 61}, (_, i) => ({
         x: 10 + i,
-        y: 520 - 12 * Math.sin((3 * Math.PI * i) / 60),
+        y: 520 - 12 * Math.sin((5 * Math.PI * i) / 60),
       })),
     );
     const host = fakeHost([...letters, mark]);
@@ -1393,5 +1427,56 @@ describe('outlinesOf', () => {
     const outlines = await result;
     expect(most).toBe(64);
     expect(outlines.map(o => o[0].x)).toEqual(elements.map((_, i) => i));
+  });
+});
+
+describe('handlePenUp: no ghosts after deleting a selection', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  it('refreshes the screen before the next selection when the last one was deleted', async () => {
+    const first = el(word(480, 500));
+    const second = el(word(480, 1000));
+    const loop1 = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([first, second, loop1]);
+
+    expect(await handlePenUp([loop1], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'selected',
+    });
+    expect(host.selection?.uuids).toEqual([first.uuid]);
+
+    // The user deletes the selection with the lasso toolbar.
+    await host.deleteElements([first.numInPage], 3, 0);
+    host.calls.length = 0;
+
+    const loop2 = el(ellipse(520, 1000, 200, 120));
+    const page = await host.getPageElements('', 3);
+    const host2 = fakeHost([...page, loop2]);
+    host2.selection = host.selection;
+    const lines: string[] = [];
+    expect(
+      await handlePenUp([loop2], host2, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({kind: 'selected', count: 1});
+    expect(host2.calls).toEqual(['delete', 'reload', 'lasso']);
+    expect(lines).toContain('last selection: 1 of 1 stroke(s) deleted');
+  });
+
+  it('stays on the fast path when the last selection is still there', async () => {
+    const first = el(word(480, 500));
+    const second = el(word(480, 1000));
+    const loop1 = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([first, second, loop1]);
+    await handlePenUp([loop1], host, DEFAULT_CONFIG);
+    host.calls.length = 0;
+
+    const loop2 = el(ellipse(520, 1000, 200, 120));
+    const host2 = fakeHost([first, second, loop2]);
+    host2.selection = host.selection;
+    await handlePenUp([loop2], host2, DEFAULT_CONFIG);
+    expect(host2.calls).toEqual(['delete', 'lasso']);
+    expect(host2.selection?.uuids).toEqual([second.uuid]);
   });
 });

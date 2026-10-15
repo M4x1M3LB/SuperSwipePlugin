@@ -495,7 +495,7 @@ export interface WaveOptions {
   minPoints: number;
   /**
    * Minimum number of bounces: the stroke turning between up and down. A
-   * tilde "~" has 2, so it needs 3 or more to count.
+   * tilde "~" has 2, an "m" or "w" 3 or 4, so it needs 5 or more ("∿∿∿").
    */
   minBounces: number;
   /** A bounce must turn back by at least this fraction of the wave's height. */
@@ -516,7 +516,7 @@ export interface WaveOptions {
 
 export const DEFAULT_WAVE_OPTIONS: WaveOptions = {
   minPoints: 10,
-  minBounces: 3,
+  minBounces: 5,
   bounceRatio: 0.25,
   minAspect: 1,
   minFlatness: 0.12,
@@ -526,8 +526,7 @@ export const DEFAULT_WAVE_OPTIONS: WaveOptions = {
 };
 
 /**
- * Is the stroke a sideways wave with 3 bounces or more (like "∿∿", a tilde
- * with an extra bounce), drawn left to right or right to left? Returns its
+ * Is the stroke a sideways wave with 5 bounces or more (like "∿∿∿"), drawn left to right or right to left? Returns its
  * bounding box, or why not.
  *
  * Only ratios are used, so with `checkSize` false the check works on the
