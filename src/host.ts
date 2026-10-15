@@ -946,6 +946,10 @@ export function createHost(
       return r && r.right > r.left && r.bottom > r.top ? r : null;
     },
 
+    async resetLasso() {
+      return this.setLassoBox('remove');
+    },
+
     async setLassoBox(state) {
       const code = {show: 0, hide: 1, remove: 2}[state];
       const r = await call<boolean>('setLassoBoxState', () =>

@@ -130,6 +130,7 @@ function fakeHost(
     penDownCount: () => 0,
     lassoUuids: async () => host.lassoHeld,
     lassoBox: async () => host.lassoBoxValue,
+    resetLasso: async () => 'ok',
     setLassoBox: async state => {
       host.calls.push(`lasso ${state}`);
       return 'ok';
@@ -1481,5 +1482,27 @@ describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
       reason: 'nothing selected',
     });
     expect(host.deleted).toEqual([]);
+  });
+});
+
+describe('lasso reset before editing (experiment)', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  it('resets the lasso box before the page is edited', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+    host.resetLasso = async () => {
+      host.calls.push('reset');
+      return 'ok';
+    };
+    const lines: string[] = [];
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+    expect(host.calls).toEqual(['reset', 'delete', 'lasso']);
+    expect(lines).toContain('lasso reset: ok');
   });
 });
