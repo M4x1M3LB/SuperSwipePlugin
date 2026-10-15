@@ -9,6 +9,9 @@ const mockHasPermission = jest.fn();
 const mockRequestPermission = jest.fn();
 const mockSave = jest.fn();
 const mockGetElements = jest.fn();
+const mockGetLassoRect = jest.fn();
+const mockSetLassoBoxState = jest.fn();
+const mockDeleteLasso = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -20,6 +23,9 @@ jest.mock('sn-plugin-lib', () => ({
     recycleElement: (uuid: string) => mockRecycle(uuid),
     getCurrentFilePath: () => mockCurrentPath(),
     insertPageElements: (...args: unknown[]) => mockInsert(...args),
+    getLassoRect: () => mockGetLassoRect(),
+    setLassoBoxState: (state: number) => mockSetLassoBoxState(state),
+    deleteLassoElements: () => mockDeleteLasso(),
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
@@ -158,6 +164,30 @@ describe('release', () => {
     );
     mockInsert.mockResolvedValue(ok(true));
     expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+  });
+});
+
+describe('lasso', () => {
+  it('closes a lasso box left open, and only then', async () => {
+    const host = createHost(new PenTracker(), {pointApi: null});
+    mockGetLassoRect.mockResolvedValueOnce(
+      ok({left: 10, top: 10, right: 200, bottom: 90}),
+    );
+    mockSetLassoBoxState.mockResolvedValue(ok(true));
+    await host.closeLasso();
+    expect(mockSetLassoBoxState.mock.calls).toEqual([[2]]);
+
+    mockGetLassoRect.mockResolvedValueOnce({success: false, result: null});
+    await host.closeLasso();
+    expect(mockSetLassoBoxState).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes the selection through the plugin API', async () => {
+    const host = createHost(new PenTracker(), {pointApi: null});
+    mockDeleteLasso.mockResolvedValueOnce(ok(true));
+    expect(await host.deleteSelection()).toBe(true);
+    mockDeleteLasso.mockResolvedValueOnce({success: false, result: null});
+    expect(await host.deleteSelection()).toBe(false);
   });
 });
 

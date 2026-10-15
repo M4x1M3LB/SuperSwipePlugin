@@ -125,6 +125,7 @@ function fakeHost(
       return true;
     },
     penDownCount: () => 0,
+    closeLasso: async () => {},
     rememberSelection: next => {
       host.selection = next;
     },
@@ -1430,29 +1431,39 @@ describe('outlinesOf', () => {
   });
 });
 
-describe('handlePenUp: no ghosts after deleting a selection', () => {
+describe('handlePenUp: deleted selections coming back', () => {
   beforeEach(() => {
     nextNum = 1;
   });
 
-  it('refreshes the screen before the next selection when the last one was deleted', async () => {
+  it('closes a lasso left open before reading the page', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop]);
+    const order: string[] = [];
+    host.closeLasso = async () => {
+      order.push('close');
+    };
+    const read = host.getPageElements;
+    host.getPageElements = (...args) => {
+      order.push('read');
+      return read(...args);
+    };
+
+    await handlePenUp([loop], host, DEFAULT_CONFIG);
+    expect(order.slice(0, 2)).toEqual(['close', 'read']);
+  });
+
+  it('reports whether the last selection is still saved in the note', async () => {
     const first = el(word(480, 500));
     const second = el(word(480, 1000));
     const loop1 = el(ellipse(520, 500, 200, 120));
     const host = fakeHost([first, second, loop1]);
-
-    expect(await handlePenUp([loop1], host, DEFAULT_CONFIG)).toMatchObject({
-      kind: 'selected',
-    });
+    await handlePenUp([loop1], host, DEFAULT_CONFIG);
     expect(host.selection?.uuids).toEqual([first.uuid]);
 
-    // The user deletes the selection with the lasso toolbar.
-    await host.deleteElements([first.numInPage], 3, 0);
-    host.calls.length = 0;
-
+    // Deleted: the next gesture finds 0 of 1 in the note.
     const loop2 = el(ellipse(520, 1000, 200, 120));
-    const page = await host.getPageElements('', 3);
-    const host2 = fakeHost([...page, loop2]);
+    const host2 = fakeHost([second, loop2]);
     host2.selection = host.selection;
     const lines: string[] = [];
     expect(
@@ -1460,22 +1471,7 @@ describe('handlePenUp: no ghosts after deleting a selection', () => {
         trace: l => lines.push(l),
       }),
     ).toMatchObject({kind: 'selected', count: 1});
-    expect(host2.calls).toEqual(['delete', 'reload', 'lasso']);
-    expect(lines).toContain('last selection: 1 of 1 stroke(s) deleted');
-  });
-
-  it('stays on the fast path when the last selection is still there', async () => {
-    const first = el(word(480, 500));
-    const second = el(word(480, 1000));
-    const loop1 = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([first, second, loop1]);
-    await handlePenUp([loop1], host, DEFAULT_CONFIG);
-    host.calls.length = 0;
-
-    const loop2 = el(ellipse(520, 1000, 200, 120));
-    const host2 = fakeHost([first, second, loop2]);
-    host2.selection = host.selection;
-    await handlePenUp([loop2], host2, DEFAULT_CONFIG);
+    expect(lines).toContain('last selection: 0 of 1 still in the note');
     expect(host2.calls).toEqual(['delete', 'lasso']);
     expect(host2.selection?.uuids).toEqual([second.uuid]);
   });

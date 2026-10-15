@@ -91,6 +91,8 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /** Close a lasso box left open on the page, if any. */
+  closeLasso(): Promise<void>;
   /**
    * Remember the strokes a gesture just selected (null to forget), so the
    * next gesture can tell whether they were deleted with the lasso toolbar.
@@ -150,11 +152,6 @@ interface Context {
   isCancelled: () => boolean;
   trace: (line: string) => void;
   screenRefresh: boolean;
-  /**
-   * Strokes selected by the last gesture were deleted since: the device may
-   * repaint this page from a stale picture (ghosts), so refresh it.
-   */
-  staleScreen: boolean;
   /** The page size, when already read or being read. */
   size?: Promise<PageSize | null>;
 }
@@ -412,7 +409,11 @@ export async function handlePenUp(
   }
 
   const readFrom = Date.now();
+  // A selection left open (possibly one the user deleted from) is closed
+  // before the page is saved and read.
+  await host.closeLasso();
   const elements = await host.getPageElements(path, page);
+  checkLastSelection(host, path, page, elements, trace);
   trace(
     `page elements: ${elements.length} (saved and read in ${
       Date.now() - readFrom
@@ -454,7 +455,6 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
-    staleScreen: selectionDeleted(host, path, page, elements, trace),
     size,
   };
   if (isStraight) {
@@ -1048,36 +1048,31 @@ async function deleteVerified(
 }
 
 /**
- * Did the user delete what the last gesture selected on this page (with the
- * lasso toolbar)? Then the device may repaint from a stale picture of the
- * page, bringing the deleted strokes back on screen. Forgets the selection
- * once checked.
+ * Diagnostic for deleted selections coming back: how many of the strokes
+ * the last gesture selected on this page are still saved in the note. If
+ * they were deleted with the lasso toolbar and are still saved, the device
+ * did not keep that delete. Forgets the selection once checked.
  */
-function selectionDeleted(
+function checkLastSelection(
   host: Host,
   path: string,
   page: number,
   elements: PageElement[],
   trace: (line: string) => void,
-): boolean {
+): void {
   const last = host.lastSelection();
   if (!last || last.path !== path || last.page !== page) {
-    return false;
+    return;
   }
   host.rememberSelection(null);
   const present = new Set(elements.map(e => e.uuid));
-  const gone = last.uuids.filter(u => !present.has(u)).length;
-  if (gone > 0) {
-    trace(`last selection: ${gone} of ${last.uuids.length} stroke(s) deleted`);
-  }
-  return gone > 0;
+  const kept = last.uuids.filter(u => present.has(u)).length;
+  trace(`last selection: ${kept} of ${last.uuids.length} still in the note`);
 }
 
 /**
- * Remove the gesture stroke, then lasso `rect`, and remember what was
- * selected. Fast (one delete, no reload) unless the screen may be stale:
- * then the delete is checked and the note reloaded before selecting.
- * Returns the failure, if any.
+ * Remove the gesture stroke (one delete, no reload: speed matters), then
+ * lasso `rect`, and remember what was selected. Returns the failure, if any.
  */
 async function removeAndSelect(
   ctx: Context,
@@ -1085,16 +1080,7 @@ async function removeAndSelect(
   name: string,
 ): Promise<Outcome | null> {
   const {host, path, page, stroke} = ctx;
-  if (ctx.staleScreen && ctx.screenRefresh) {
-    ctx.trace('refreshing the screen first (against ghosts)');
-    const removed = await deleteVerified(ctx, [stroke]);
-    if (!removed.deleted) {
-      return {kind: 'failed', reason: `could not remove the ${name}`};
-    }
-    await repaint(ctx, removed.fileClean);
-  } else if (
-    !(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))
-  ) {
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: `could not remove the ${name}`};
   }
   ctx.trace(`${name} removed`);

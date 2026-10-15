@@ -136,12 +136,13 @@ Margin wave to erase:
   save has finished brings old strokes back), and only if the pen was not
   used since the save (it would be lost).
 
-No ghosts after deleting a selection: the plugin remembers what each
-gesture selected. If those strokes are gone at the next selection on the
-page (deleted with the lasso toolbar), the device could repaint from a
-stale picture of the page and show them again, so the gesture stroke is
-removed, checked and the note reloaded (same safety rules) before
-selecting. Otherwise selections skip the refresh: it is slow.
+Deleting a selection: use **Delete** with the SuperSwipe icon in the lasso
+toolbar. It deletes through the plugin API, the one that made the
+selection. With the device's own delete, strokes selected by a gesture
+were seen coming back at the next gesture. Before each gesture reads the
+page, a lasso box left open is closed, and the trace says how many of the
+last selection's strokes are still saved in the note ("last selection:
+N of M still in the note").
 
 ## Limitations (Supernote SDK)
 
@@ -168,7 +169,7 @@ selecting. Otherwise selections skip the refresh: it is slow.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.26.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.27.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
