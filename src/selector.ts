@@ -91,21 +91,12 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
-  /**
-   * Remember which strokes are on a page after a gesture (null to forget),
-   * so the next gesture can tell whether some were removed outside the
-   * plugin.
-   */
-  rememberPage(content: PageContent | null): void;
-  lastPage(): PageContent | null;
-  /** Delete elements from the saved note file (not the page being shown). */
-  deleteFromFile(
-    path: string,
-    page: number,
-    numsInPage: number[],
-  ): Promise<boolean>;
-  /** Reload the note from its file, whatever the pen did. */
-  reloadNote(): Promise<boolean>;
+  /** The uuids of the elements the lasso holds, or null if none/unreadable. */
+  lassoUuids(): Promise<string[] | null>;
+  /** The lasso box, or null if there is none. */
+  lassoBox(): Promise<Box | null>;
+  /** Show, hide or completely remove the lasso box; says how it went. */
+  setLassoBox(state: 'show' | 'hide' | 'remove'): Promise<string>;
   /** How many times the pen has touched the screen so far. */
   penDownCount(): number;
   /** Ask the user which side of a line to select; null if unanswered. */
@@ -123,14 +114,6 @@ export interface Host {
    * waiting to be handled).
    */
   release(pendingUuids?: string[]): void;
-}
-
-/** Which strokes a page held after a gesture, and the pen count then. */
-export interface PageContent {
-  path: string;
-  page: number;
-  uuids: string[];
-  downs: number;
 }
 
 export interface Gestures {
@@ -165,14 +148,6 @@ interface Context {
   isCancelled: () => boolean;
   trace: (line: string) => void;
   screenRefresh: boolean;
-  /**
-   * Strokes removed outside the plugin since its last gesture (lasso
-   * delete, eraser). Seen on device: the plugin's next edit through the
-   * page being shown brought them back (surviving a page turn), although
-   * the saved note no longer had them. So the gesture stroke is then
-   * removed from the saved note and the note reloaded.
-   */
-  removedOutside: string[];
   /** The page size, when already read or being read. */
   size?: Promise<PageSize | null>;
 }
@@ -431,7 +406,6 @@ export async function handlePenUp(
 
   const readFrom = Date.now();
   const elements = await host.getPageElements(path, page);
-  const removedOutside = changedOutside(host, path, page, elements, trace);
   trace(
     `page elements: ${elements.length} (saved and read in ${
       Date.now() - readFrom
@@ -473,7 +447,6 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
-    removedOutside,
     size,
   };
   if (isStraight) {
@@ -992,8 +965,6 @@ async function eraseNextToMark(
   if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
-  forgetRemoved(ctx, [...erased, stroke]);
-  await checkRemovedStayGone(ctx, ctx.others.length - erased.length);
   await repaint(ctx, removed.fileClean);
   // After the reload: recycling the previous erase's strokes never goes
   // ahead of it.
@@ -1077,34 +1048,105 @@ async function removeAndSelect(
   rect: Box,
   name: string,
 ): Promise<Outcome | null> {
-  const {host, path, page, stroke} = ctx;
-  if (ctx.removedOutside.length > 0) {
-    // Not through the page being shown: from the saved note (right, it
-    // was just saved and read), then reload the note to show it.
-    if (!(await host.deleteFromFile(path, page, [stroke.numInPage]))) {
-      return {kind: 'failed', reason: `could not remove the ${name}`};
-    }
-    const reloaded = await host.reloadNote();
-    ctx.trace(
-      `${name} removed from the saved note; note ${
-        reloaded ? 'reloaded' : 'NOT reloaded'
-      }`,
-    );
-  } else {
-    if (
-      !(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))
-    ) {
-      return {kind: 'failed', reason: `could not remove the ${name}`};
-    }
-    ctx.trace(`${name} removed`);
+  const {host, page, stroke} = ctx;
+  if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
+    return {kind: 'failed', reason: `could not remove the ${name}`};
   }
-  forgetRemoved(ctx, [stroke]);
-  await checkRemovedStayGone(ctx, ctx.others.length);
+  ctx.trace(`${name} removed`);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
   return null;
+}
+
+/**
+ * The lasso toolbar's SuperSwipe Delete: delete what the lasso holds the
+ * way the margin wave erases (seen on device to stick, while the device's
+ * own delete of a plugin-made selection came back at the plugin's next
+ * edit): close the lasso, save and read the page, delete those elements,
+ * check it, refresh the screen. Restore last erase puts them back.
+ */
+export async function deleteSelection(
+  host: Host,
+  config: SelectorConfig,
+  options: {trace?: (line: string) => void; screenRefresh?: boolean} = {},
+): Promise<Outcome> {
+  const trace = options.trace ?? (() => {});
+  const [path, page] = await Promise.all([
+    host.getCurrentFilePath(),
+    host.getCurrentPageNum(),
+  ]);
+  if (!path || !/\.note$/i.test(path) || page === null) {
+    return {kind: 'ignored', reason: 'only NOTE files are supported'};
+  }
+  if (!(await host.ensureFileAccess())) {
+    return {kind: 'failed', reason: 'file access not granted'};
+  }
+  const [held, box] = await Promise.all([host.lassoUuids(), host.lassoBox()]);
+  if (!held?.length && !box) {
+    return {kind: 'ignored', reason: 'nothing selected'};
+  }
+  trace(`selection: ${held?.length ?? 0} element(s)`);
+  trace(`lasso closed: ${await host.setLassoBox('remove')}`);
+
+  const elements = await host.getPageElements(path, page);
+  const wanted = new Set(held ?? []);
+  let targets = elements.filter(e => wanted.has(e.uuid));
+  trace(`found on the page by id: ${targets.length}`);
+  if (targets.length < wanted.size && box) {
+    // Ids may differ between the lasso and the page read: take what sits
+    // in the lasso box instead.
+    const outlines = await outlinesOf(elements);
+    targets = elements.filter((_, i) => {
+      if (outlines[i].length === 0) {
+        return false;
+      }
+      const b = boundingBox(outlines[i]);
+      const cx = (b.left + b.right) / 2;
+      const cy = (b.top + b.bottom) / 2;
+      return (
+        cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom
+      );
+    });
+    trace(`found in the lasso box instead: ${targets.length}`);
+  }
+  if (targets.length === 0) {
+    return {kind: 'failed', reason: 'selected strokes not found on the page'};
+  }
+
+  // deletePageElements works one layer at a time.
+  const layers = new Map<number, PageElement[]>();
+  for (const e of targets) {
+    layers.set(e.layerNum, [...(layers.get(e.layerNum) ?? []), e]);
+  }
+  let clean = true;
+  let ctx: Context | null = null;
+  let largest: PageElement[] = [];
+  for (const group of layers.values()) {
+    ctx = {
+      host,
+      config,
+      path,
+      page,
+      stroke: group[0],
+      others: [],
+      isCancelled: () => false,
+      trace,
+      screenRefresh: options.screenRefresh ?? true,
+    };
+    const removed = await deleteVerified(ctx, group);
+    if (!removed.deleted) {
+      return {kind: 'failed', reason: 'could not delete the selection'};
+    }
+    clean = clean && removed.fileClean;
+    if (group.length > largest.length) {
+      largest = group;
+    }
+  }
+  await repaint(ctx!, clean);
+  host.rememberErased(path, page, largest[0].layerNum, largest);
+  return {kind: 'erased', count: targets.length};
 }
 
 /**
@@ -1179,75 +1221,6 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
     return {kind: 'ignored', reason: 'page changed'};
   }
   return null;
-}
-
-/**
- * Diagnostic after the first edit following strokes removed outside the
- * plugin: read the page back and count its elements (strokes coming back
- * may come back as new strokes, so uuids are not enough).
- */
-async function checkRemovedStayGone(
-  ctx: Context,
-  expected: number,
-): Promise<void> {
-  if (ctx.removedOutside.length === 0) {
-    return;
-  }
-  const removed = new Set(ctx.removedOutside);
-  const page = await ctx.host.getPageElements(ctx.path, ctx.page);
-  const back = page.filter(e => removed.has(e.uuid)).length;
-  ctx.trace(
-    `after the edit: ${page.length} element(s), expected ${expected}; ` +
-      `${back} of ${removed.size} removed stroke(s) back`,
-  );
-}
-
-/**
- * Were strokes removed from this page outside the plugin since its last
- * gesture (lasso delete, eraser)? Then remember the page as it is now.
- */
-function changedOutside(
-  host: Host,
-  path: string,
-  page: number,
-  elements: PageElement[],
-  trace: (line: string) => void,
-): string[] {
-  const last = host.lastPage();
-  const now = elements.map(e => e.uuid);
-  const downs = host.penDownCount();
-  host.rememberPage({path, page, uuids: now, downs});
-  if (!last || last.path !== path || last.page !== page) {
-    return [];
-  }
-  // Every stroke written since takes a pen touch: more new elements than
-  // that means strokes came back (as new strokes).
-  const known = new Set(last.uuids);
-  const added = now.filter(u => !known.has(u)).length;
-  const written = downs - last.downs;
-  if (added > written) {
-    trace(
-      `strokes came back: ${added} new element(s), only ${written} pen touch(es) since the last gesture`,
-    );
-  }
-  const present = new Set(now);
-  const gone = last.uuids.filter(u => !present.has(u));
-  if (gone.length > 0) {
-    trace(`page changed outside the plugin: ${gone.length} stroke(s) removed`);
-  }
-  return gone;
-}
-
-/** The plugin removed these strokes: not a change made outside it. */
-function forgetRemoved(ctx: Context, removed: PageElement[]): void {
-  const last = ctx.host.lastPage();
-  if (last) {
-    const gone = new Set(removed.map(e => e.uuid));
-    ctx.host.rememberPage({
-      ...last,
-      uuids: last.uuids.filter(u => !gone.has(u)),
-    });
-  }
 }
 
 /** How many of the newest page strokes to consider as the gesture. */

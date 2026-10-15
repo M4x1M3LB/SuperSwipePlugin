@@ -60,9 +60,10 @@ function App(): React.JSX.Element {
         lasso-select them. A straight horizontal line, a few words long or more
         and clear of the writing, selects what is above or below it (you are
         asked which when there is writing on both sides). A vertical bar in the
-        margin beside some lines selects that block. To erase a line of writing,
-        draw a sideways wave with five bounces or more (∿∿∿, three waves) in the
-        margin next to it, left or right, leaving a small gap.
+        margin beside some lines selects that block. Delete a selection with the
+        SuperSwipe Delete button in the lasso toolbar. To erase a line of
+        writing, draw a sideways wave with five bounces or more (∿∿∿, three
+        waves) in the margin next to it, left or right, leaving a small gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />

@@ -9,8 +9,6 @@ const mockHasPermission = jest.fn();
 const mockRequestPermission = jest.fn();
 const mockSave = jest.fn();
 const mockGetElements = jest.fn();
-const mockFileDelete = jest.fn();
-const mockReload = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -22,11 +20,9 @@ jest.mock('sn-plugin-lib', () => ({
     recycleElement: (uuid: string) => mockRecycle(uuid),
     getCurrentFilePath: () => mockCurrentPath(),
     insertPageElements: (...args: unknown[]) => mockInsert(...args),
-    reloadFile: () => mockReload(),
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
-    deleteElements: (...args: unknown[]) => mockFileDelete(...args),
   },
   PluginNoteAPI: {saveCurrentNote: () => mockSave()},
   NativeUIUtils: {},
@@ -162,17 +158,6 @@ describe('release', () => {
     );
     mockInsert.mockResolvedValue(ok(true));
     expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
-  });
-});
-
-describe('editing the saved note', () => {
-  it('deletes from the note file, then reloads the note', async () => {
-    mockFileDelete.mockResolvedValueOnce(ok(true));
-    mockReload.mockResolvedValueOnce(ok(true));
-    const host = createHost(new PenTracker(), {pointApi: null});
-    expect(await host.deleteFromFile('/n.note', 2, [7])).toBe(true);
-    expect(mockFileDelete).toHaveBeenCalledWith('/n.note', 2, [7]);
-    expect(await host.reloadNote()).toBe(true);
   });
 });
 

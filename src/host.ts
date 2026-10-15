@@ -19,7 +19,7 @@ import {
   type MotionEvent,
 } from 'sn-plugin-lib';
 import type {Box, Pt} from './geometry';
-import type {Host, PageContent, PageElement} from './selector';
+import type {Host, PageElement} from './selector';
 import {status} from './status';
 
 interface Response<T> {
@@ -593,9 +593,6 @@ export function createHost(
   // Which way points were read for this stroke, traced once each.
   let tracedDirect = false;
   let tracedFallback = false;
-  // The strokes on the page after the last gesture, to spot changes made
-  // outside the plugin (a lasso delete, the eraser).
-  let pageContent: PageContent | null = null;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
   // Both file permissions were "always allow" at the last check: no need to
@@ -919,23 +916,6 @@ export function createHost(
       }
     },
 
-    async deleteFromFile(path, page, numsInPage) {
-      const ok = await call<boolean>('deleteElements (file)', () =>
-        PluginFileAPI.deleteElements(path, page, numsInPage),
-      );
-      if (ok !== true) {
-        fileCallFailed('deleteElements');
-      }
-      return ok === true;
-    },
-
-    async reloadNote() {
-      const reloaded = await call<unknown>('reloadFile', () =>
-        PluginCommAPI.reloadFile(),
-      );
-      return reloaded !== null && reloaded !== false;
-    },
-
     async reloadIfQuiet() {
       // Anything written since the last save would be lost by the reload.
       if (!pen.quietSince(savedAt)) {
@@ -951,12 +931,30 @@ export function createHost(
       return ok;
     },
 
-    rememberPage(next) {
-      pageContent = next;
+    async lassoUuids() {
+      const held = await call<Element[]>('getLassoElements', () =>
+        PluginCommAPI.getLassoElements(),
+      );
+      if (!Array.isArray(held)) {
+        return null;
+      }
+      // Tracked so they are freed with the others.
+      return wrap(held).map(e => e.uuid);
     },
 
-    lastPage() {
-      return pageContent;
+    async lassoBox() {
+      const r = await call<Box>('getLassoRect', () =>
+        PluginCommAPI.getLassoRect(),
+      );
+      return r && r.right > r.left && r.bottom > r.top ? r : null;
+    },
+
+    async setLassoBox(state) {
+      const code = {show: 0, hide: 1, remove: 2}[state];
+      const r = await call<boolean>('setLassoBoxState', () =>
+        PluginCommAPI.setLassoBoxState(code),
+      );
+      return r === true ? 'ok' : 'failed';
     },
 
     penDownCount() {

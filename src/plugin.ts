@@ -1,7 +1,11 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
 import {createHost, PenTracker, type DeviceHost} from './host';
-import {handlePenUp, type Outcome} from './selector';
+import {
+  deleteSelection as deleteSelectionFlow,
+  handlePenUp,
+  type Outcome,
+} from './selector';
 import {status} from './status';
 
 let host: DeviceHost | null = null;
@@ -145,6 +149,29 @@ export function startGestures(): void {
       handle(incoming);
     },
   });
+}
+
+/** The lasso toolbar's SuperSwipe Delete button. */
+export async function deleteSelection(): Promise<void> {
+  if (!host) {
+    return;
+  }
+  const device = host;
+  const lines: string[] = [];
+  const trace = (line: string) => {
+    lines.push(line);
+  };
+  device.setTrace(trace);
+  const outcome = await deleteSelectionFlow(device, DEFAULT_CONFIG, {
+    trace,
+    screenRefresh: status.gestures().screenRefresh ?? true,
+  }).catch(
+    (e: unknown): Outcome => ({
+      kind: 'failed',
+      reason: e instanceof Error ? e.message : String(e),
+    }),
+  );
+  status.setLast(outcome, lines);
 }
 
 /** Put back the strokes removed by the last margin-wave erase. */

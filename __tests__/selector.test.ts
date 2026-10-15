@@ -1,10 +1,10 @@
 import {DEFAULT_CONFIG} from '../src/config';
 import type {Box, Pt} from '../src/geometry';
 import {
+  deleteSelection,
   handlePenUp,
   outlinesOf,
   type Host,
-  type PageContent,
   type PageElement,
 } from '../src/selector';
 
@@ -72,7 +72,8 @@ interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
   remembered: PageElement[][];
-  pageContent: PageContent | null;
+  lassoHeld: string[] | null;
+  lassoBoxValue: Box | null;
   /** Calls in order: 'delete', 'reload', 'lasso', 'ask'. */
   calls: string[];
 }
@@ -86,7 +87,8 @@ function fakeHost(
   let current = [...page];
   const host: FakeHost = {
     deleted: [],
-    pageContent: null,
+    lassoHeld: null,
+    lassoBoxValue: null,
     lassoed: [],
     remembered: [],
     calls: [],
@@ -126,20 +128,12 @@ function fakeHost(
       return true;
     },
     penDownCount: () => 0,
-    deleteFromFile: async (_path, _page, nums) => {
-      host.calls.push('file-delete');
-      host.deleted.push(nums);
-      current = current.filter(e => !nums.includes(e.numInPage));
-      return true;
+    lassoUuids: async () => host.lassoHeld,
+    lassoBox: async () => host.lassoBoxValue,
+    setLassoBox: async state => {
+      host.calls.push(`lasso ${state}`);
+      return 'ok';
     },
-    reloadNote: async () => {
-      host.calls.push('reload');
-      return true;
-    },
-    rememberPage: next => {
-      host.pageContent = next;
-    },
-    lastPage: () => host.pageContent,
     askAboveOrBelow: async () => {
       host.calls.push('ask');
       return 'below';
@@ -1441,88 +1435,51 @@ describe('outlinesOf', () => {
   });
 });
 
-describe('handlePenUp: strokes removed outside the plugin', () => {
+describe('deleteSelection (lasso toolbar SuperSwipe Delete)', () => {
   beforeEach(() => {
     nextNum = 1;
   });
 
-  /** A first gesture, then the user deletes `deleted` with the lasso. */
-  async function afterOutsideDelete() {
-    const first = el(word(480, 500));
-    const second = el(word(480, 1000));
-    const loop1 = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([first, second, loop1]);
-    await handlePenUp([loop1], host, DEFAULT_CONFIG);
-    const loop2 = el(ellipse(520, 1000, 200, 120));
-    const host2 = fakeHost([second, loop2]); // "first" was deleted
-    host2.pageContent = host.pageContent;
-    return {host2, loop2, second};
-  }
-
-  it('removes the gesture from the saved note and reloads, then counts', async () => {
-    const {host2, loop2} = await afterOutsideDelete();
+  it('deletes the selected strokes like the wave: checked, refreshed, restorable', async () => {
+    const keep = el(word(100, 100));
+    const a = el(word(480, 500));
+    const b = el(word(600, 500));
+    const host = fakeHost([keep, a, b]);
+    host.lassoHeld = [a.uuid, b.uuid];
     const lines: string[] = [];
 
     expect(
-      await handlePenUp([loop2], host2, DEFAULT_CONFIG, {
+      await deleteSelection(host, DEFAULT_CONFIG, {
         trace: l => lines.push(l),
       }),
-    ).toMatchObject({kind: 'selected', count: 1});
-    expect(host2.calls).toEqual(['file-delete', 'reload', 'lasso']);
-    expect(lines).toContain(
-      'page changed outside the plugin: 1 stroke(s) removed',
-    );
-    expect(lines).toContain(
-      'loop stroke removed from the saved note; note reloaded',
-    );
-    expect(lines).toContain(
-      'after the edit: 1 element(s), expected 1; 0 of 1 removed stroke(s) back',
-    );
+    ).toEqual({kind: 'erased', count: 2});
+    expect(host.calls).toEqual(['lasso remove', 'delete', 'reload']);
+    expect(host.deleted).toEqual([[3, 2]]);
+    expect(await host.getPageElements('', 3)).toEqual([keep]);
+    expect(host.remembered).toEqual([[a, b]]);
+    expect(lines).toContain('found on the page by id: 2');
   });
 
-  it('fails without selecting when the saved note cannot be edited', async () => {
-    const {host2, loop2} = await afterOutsideDelete();
-    host2.deleteFromFile = async () => false;
+  it('falls back to the lasso box when the ids differ', async () => {
+    const keep = el(word(100, 100));
+    const a = el(word(480, 500));
+    const host = fakeHost([keep, a]);
+    host.lassoHeld = ['other-id'];
+    host.lassoBoxValue = {left: 450, top: 480, right: 600, bottom: 540};
 
-    expect(await handlePenUp([loop2], host2, DEFAULT_CONFIG)).toEqual({
-      kind: 'failed',
-      reason: 'could not remove the loop stroke',
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 1,
     });
-    expect(host2.lassoed).toEqual([]);
+    expect(await host.getPageElements('', 3)).toEqual([keep]);
   });
 
-  it('notices strokes coming back as new strokes', async () => {
-    const first = el(word(480, 500));
-    const loop1 = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([first, loop1]);
-    await handlePenUp([loop1], host, DEFAULT_CONFIG);
-
-    // One pen touch (the new loop), but two new elements: one came back.
-    const ghost = el(word(480, 700));
-    const loop2 = el(ellipse(520, 700, 200, 120));
-    const host2 = fakeHost([first, ghost, loop2]);
-    host2.pageContent = host.pageContent;
-    host2.penDownCount = () => 1;
-    const lines: string[] = [];
-    await handlePenUp([loop2], host2, DEFAULT_CONFIG, {
-      trace: l => lines.push(l),
+  it('does nothing without a selection', async () => {
+    const host = fakeHost([el(word(100, 100))]);
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'nothing selected',
     });
-    expect(lines).toContain(
-      'strokes came back: 2 new element(s), only 1 pen touch(es) since the last gesture',
-    );
-  });
-
-  it('does not reload for strokes the plugin removed itself', async () => {
-    const first = el(word(480, 500));
-    const second = el(word(480, 1000));
-    const loop1 = el(ellipse(520, 500, 200, 120));
-    const host = fakeHost([first, second, loop1]);
-    await handlePenUp([loop1], host, DEFAULT_CONFIG); // removes loop1
-
-    const loop2 = el(ellipse(520, 1000, 200, 120));
-    const host2 = fakeHost([first, second, loop2]);
-    host2.pageContent = host.pageContent;
-    await handlePenUp([loop2], host2, DEFAULT_CONFIG);
-    expect(host2.calls).toEqual(['delete', 'lasso']);
+    expect(host.deleted).toEqual([]);
   });
 });

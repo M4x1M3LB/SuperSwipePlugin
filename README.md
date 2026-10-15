@@ -136,18 +136,15 @@ Margin wave to erase:
   save has finished brings old strokes back), and only if the pen was not
   used since the save (it would be lost).
 
-Strokes deleted outside the plugin (the lasso toolbar's delete, the
-eraser): seen on device, the note saved after such a delete no longer
-has them, yet the plugin's next edit through the page being shown
-brought them back, for real (selectable, surviving a page turn), and a
-reload or clearing the SDK's element cache did not stop it. So the
-plugin remembers which strokes were on the page after each gesture; when
-some have gone at the next one ("page changed outside the plugin"), it
-removes its gesture stroke from the saved note itself and reloads the
-note, instead of editing the page being shown. It then reads the page
-back and counts its elements ("after the edit: N element(s), expected
-M"), and each gesture says when the page has more new elements than pen
-touches since the last one ("strokes came back").
+Deleting a selection: use **Delete** with the SuperSwipe icon in the
+lasso toolbar, not the device's own delete. Seen on device: strokes
+deleted with the device's delete from a selection the plugin made came
+back (for real) at the plugin's next edit, while strokes erased by the
+plugin (the margin wave) stay gone. SuperSwipe Delete deletes the
+selection the way the wave erases: the lasso is closed, the page saved
+and read, the selected elements deleted (found by id, or else by the
+lasso box) and checked, the screen refreshed, and **Restore last erase**
+can put them back.
 
 ## Limitations (Supernote SDK)
 
@@ -174,7 +171,7 @@ touches since the last one ("strokes came back").
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.33.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.34.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
