@@ -102,6 +102,8 @@ export interface Host {
   lastPage(): {path: string; page: number; uuids: string[]} | null;
   /** How many times the pen has touched the screen so far. */
   penDownCount(): number;
+  /** The uuids of the elements the lasso holds, or null if unreadable. */
+  lassoUuids(): Promise<string[] | null>;
   /** Ask the user which side of a line to select; null if unanswered. */
   askAboveOrBelow(): Promise<'above' | 'below' | null>;
   /**
@@ -1078,6 +1080,19 @@ async function removeAndSelect(
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
     return {kind: 'failed', reason: 'could not create lasso selection'};
+  }
+  if (ctx.removedOutside.length > 0) {
+    // Read-only diagnostic: does the new lasso hold strokes deleted outside
+    // the plugin (the lasso bringing them back)?
+    const held = await host.lassoUuids();
+    const removed = new Set(ctx.removedOutside);
+    ctx.trace(
+      held
+        ? `in the new selection: ${
+            held.filter(u => removed.has(u)).length
+          } of ${removed.size} removed stroke(s), ${held.length} in all`
+        : 'in the new selection: could not read it',
+    );
   }
   return null;
 }

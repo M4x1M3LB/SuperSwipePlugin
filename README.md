@@ -174,7 +174,7 @@ the chance to restore the last erase.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.31.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.32.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

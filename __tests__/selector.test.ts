@@ -125,6 +125,7 @@ function fakeHost(
       return true;
     },
     penDownCount: () => 0,
+    lassoUuids: async () => [],
     clearElementCache: () => {
       host.calls.push('clear');
       return true;
@@ -1468,6 +1469,9 @@ describe('handlePenUp: strokes removed outside the plugin', () => {
     expect(lines).toContain('element cache cleared before editing');
     expect(lines).toContain(
       'after the edit: 0 of 1 removed stroke(s) came back',
+    );
+    expect(lines).toContain(
+      'in the new selection: 0 of 1 removed stroke(s), 0 in all',
     );
   });
 

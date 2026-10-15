@@ -973,6 +973,17 @@ export function createHost(
       return ok === true;
     },
 
+    async lassoUuids() {
+      const held = await call<Element[]>('getLassoElements', () =>
+        PluginCommAPI.getLassoElements(),
+      );
+      if (!Array.isArray(held)) {
+        return null;
+      }
+      // Tracked so they are freed with the others.
+      return wrap(held).map(e => e.uuid);
+    },
+
     async askAboveOrBelow() {
       // The device's own two-button dialog. Its result is not documented:
       // taken as true for the right button (as for an OK button on the
