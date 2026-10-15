@@ -158,8 +158,15 @@ export async function deleteSelection(): Promise<void> {
   }
   const lines: string[] = [];
   host.setTrace(line => lines.push(line));
-  const selected = host.lastSelection()?.uuids.length ?? 0;
+  const selection = host.lastSelection();
+  const selected = selection?.uuids.length ?? 0;
   const ok = await host.deleteSelection();
+  const page = host.lastPage();
+  if (ok && selection && page) {
+    // Removed by the plugin: not a change made outside it.
+    const gone = new Set(selection.uuids);
+    host.rememberPage({...page, uuids: page.uuids.filter(u => !gone.has(u))});
+  }
   lines.push(
     ok ? 'deleted the selection (SuperSwipe Delete)' : 'delete failed',
   );

@@ -72,6 +72,7 @@ interface FakeHost extends Host {
   lassoed: Box[];
   remembered: PageElement[][];
   selection: {path: string; page: number; uuids: string[]} | null;
+  pageContent: {path: string; page: number; uuids: string[]} | null;
   /** Calls in order: 'delete', 'reload', 'lasso', 'ask'. */
   calls: string[];
 }
@@ -86,6 +87,7 @@ function fakeHost(
   const host: FakeHost = {
     deleted: [],
     selection: null,
+    pageContent: null,
     lassoed: [],
     remembered: [],
     calls: [],
@@ -126,6 +128,10 @@ function fakeHost(
     },
     penDownCount: () => 0,
     closeLasso: async () => {},
+    rememberPage: next => {
+      host.pageContent = next;
+    },
+    lastPage: () => host.pageContent,
     rememberSelection: next => {
       host.selection = next;
     },
@@ -1474,5 +1480,65 @@ describe('handlePenUp: deleted selections coming back', () => {
     expect(lines).toContain('last selection: 0 of 1 still in the note');
     expect(host2.calls).toEqual(['delete', 'lasso']);
     expect(host2.selection?.uuids).toEqual([second.uuid]);
+  });
+});
+
+describe('handlePenUp: strokes removed outside the plugin', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  /** A first gesture, then the user deletes `deleted` with the lasso. */
+  async function afterOutsideDelete() {
+    const first = el(word(480, 500));
+    const second = el(word(480, 1000));
+    const loop1 = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([first, second, loop1]);
+    await handlePenUp([loop1], host, DEFAULT_CONFIG);
+    const loop2 = el(ellipse(520, 1000, 200, 120));
+    const host2 = fakeHost([second, loop2]); // "first" was deleted
+    host2.pageContent = host.pageContent;
+    return {host2, loop2, second};
+  }
+
+  it('reloads the note before editing, so the device cannot write them back', async () => {
+    const {host2, loop2} = await afterOutsideDelete();
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([loop2], host2, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toMatchObject({kind: 'selected', count: 1});
+    expect(host2.calls).toEqual(['reload', 'delete', 'lasso']);
+    expect(lines).toContain(
+      'page changed outside the plugin: 1 stroke(s) removed',
+    );
+    expect(lines).toContain('note reloaded before editing');
+  });
+
+  it('leaves the gesture as ink when it cannot reload first', async () => {
+    const {host2, loop2} = await afterOutsideDelete();
+    host2.reloadIfQuiet = async () => false;
+
+    expect(await handlePenUp([loop2], host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'could not reload the note first (the pen was used)',
+    });
+    expect(host2.deleted).toEqual([]);
+  });
+
+  it('does not reload for strokes the plugin removed itself', async () => {
+    const first = el(word(480, 500));
+    const second = el(word(480, 1000));
+    const loop1 = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([first, second, loop1]);
+    await handlePenUp([loop1], host, DEFAULT_CONFIG); // removes loop1
+
+    const loop2 = el(ellipse(520, 1000, 200, 120));
+    const host2 = fakeHost([first, second, loop2]);
+    host2.pageContent = host.pageContent;
+    await handlePenUp([loop2], host2, DEFAULT_CONFIG);
+    expect(host2.calls).toEqual(['delete', 'lasso']);
   });
 });

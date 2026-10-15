@@ -149,6 +149,7 @@ const PEN_STALE_MS = 1000;
 export class PenTracker {
   private down = false;
   private downs = 0;
+  private lastDownAt = 0;
   private lastEventAt = 0;
   private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
     [];
@@ -182,6 +183,7 @@ export class PenTracker {
     if (action === ACTION_DOWN) {
       this.down = true;
       this.downs++;
+      this.lastDownAt = Date.now();
     } else if (action === ACTION_UP || action === ACTION_CANCEL) {
       this.down = false;
     }
@@ -209,9 +211,13 @@ export class PenTracker {
     return this.downs;
   }
 
-  /** Has the pen stayed off the screen since `time` (Date.now() ms)? */
+  /**
+   * Has the pen stayed off the screen since `time` (Date.now() ms)? Only
+   * touching counts: hovering writes nothing (and hover events would
+   * otherwise block a reload whenever the pen is near the screen).
+   */
   quietSince(time: number): boolean {
-    return !this.down && this.lastEventAt < time;
+    return this.isUp(Date.now()) && this.lastDownAt < time;
   }
 
   waitForUp(maxWaitMs: number): Promise<void> {
@@ -594,6 +600,9 @@ export function createHost(
   let tracedFallback = false;
   // What the last gesture selected, to spot it being deleted (ghosts).
   let selection: {path: string; page: number; uuids: string[]} | null = null;
+  // The strokes on the page after the last gesture, to spot changes made
+  // outside the plugin (a lasso delete, the eraser).
+  let pageContent: {path: string; page: number; uuids: string[]} | null = null;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
   // Both file permissions were "always allow" at the last check: no need to
@@ -930,6 +939,14 @@ export function createHost(
         fileCallFailed('reloadFile');
       }
       return ok;
+    },
+
+    rememberPage(next) {
+      pageContent = next;
+    },
+
+    lastPage() {
+      return pageContent;
     },
 
     rememberSelection(next) {

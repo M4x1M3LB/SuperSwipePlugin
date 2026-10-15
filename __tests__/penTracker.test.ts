@@ -65,6 +65,19 @@ describe('PenTracker', () => {
     now.mockRestore();
   });
 
+  it('is not quiet after the pen touched the screen since the save', () => {
+    const now = jest.spyOn(Date, 'now');
+    const tracker = new PenTracker();
+    tracker.start();
+    now.mockReturnValue(3000);
+    listeners[0].onMsg(pen(0));
+    listeners[0].onMsg(pen(2));
+    listeners[0].onMsg(pen(1));
+    expect(tracker.quietSince(2000)).toBe(false);
+    expect(tracker.quietSince(4000)).toBe(true);
+    now.mockRestore();
+  });
+
   it('ignores finger touches', async () => {
     const tracker = new PenTracker();
     tracker.start();

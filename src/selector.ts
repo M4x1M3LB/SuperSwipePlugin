@@ -91,6 +91,15 @@ export interface Host {
     elements: PageElement[],
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
+  /**
+   * Remember which strokes are on a page after a gesture (null to forget),
+   * so the next gesture can tell whether some were removed outside the
+   * plugin.
+   */
+  rememberPage(
+    content: {path: string; page: number; uuids: string[]} | null,
+  ): void;
+  lastPage(): {path: string; page: number; uuids: string[]} | null;
   /** Close a lasso box left open on the page, if any. */
   closeLasso(): Promise<void>;
   /**
@@ -152,6 +161,12 @@ interface Context {
   isCancelled: () => boolean;
   trace: (line: string) => void;
   screenRefresh: boolean;
+  /**
+   * Strokes were removed outside the plugin since its last gesture: the
+   * device's copy of the page may still hold them, and the plugin's next
+   * edit would write them back. Reload the note before editing.
+   */
+  resync: boolean;
   /** The page size, when already read or being read. */
   size?: Promise<PageSize | null>;
 }
@@ -414,6 +429,7 @@ export async function handlePenUp(
   await host.closeLasso();
   const elements = await host.getPageElements(path, page);
   checkLastSelection(host, path, page, elements, trace);
+  const resync = changedOutside(host, path, page, elements, trace);
   trace(
     `page elements: ${elements.length} (saved and read in ${
       Date.now() - readFrom
@@ -455,6 +471,7 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
+    resync,
     size,
   };
   if (isStraight) {
@@ -973,6 +990,7 @@ async function eraseNextToMark(
   if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
+  forgetRemoved(ctx, [...erased, stroke]);
   await repaint(ctx, removed.fileClean);
   // After the reload: recycling the previous erase's strokes never goes
   // ahead of it.
@@ -1083,6 +1101,7 @@ async function removeAndSelect(
   if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: `could not remove the ${name}`};
   }
+  forgetRemoved(ctx, [stroke]);
   ctx.trace(`${name} removed`);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
@@ -1179,7 +1198,56 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   if (path !== ctx.path || page !== ctx.page) {
     return {kind: 'ignored', reason: 'page changed'};
   }
+  if (ctx.resync) {
+    // The file was just saved and read, so it is right: reloading makes
+    // the device drop its stale copy before the plugin edits the page.
+    if (!(await ctx.host.reloadIfQuiet())) {
+      return {
+        kind: 'ignored',
+        reason: 'could not reload the note first (the pen was used)',
+      };
+    }
+    ctx.trace('note reloaded before editing');
+    ctx.resync = false;
+  }
   return null;
+}
+
+/**
+ * Were strokes removed from this page outside the plugin since its last
+ * gesture (lasso delete, eraser)? Then remember the page as it is now.
+ */
+function changedOutside(
+  host: Host,
+  path: string,
+  page: number,
+  elements: PageElement[],
+  trace: (line: string) => void,
+): boolean {
+  const last = host.lastPage();
+  const now = elements.map(e => e.uuid);
+  host.rememberPage({path, page, uuids: now});
+  if (!last || last.path !== path || last.page !== page) {
+    return false;
+  }
+  const present = new Set(now);
+  const gone = last.uuids.filter(u => !present.has(u)).length;
+  if (gone > 0) {
+    trace(`page changed outside the plugin: ${gone} stroke(s) removed`);
+  }
+  return gone > 0;
+}
+
+/** The plugin removed these strokes: not a change made outside it. */
+function forgetRemoved(ctx: Context, removed: PageElement[]): void {
+  const last = ctx.host.lastPage();
+  if (last) {
+    const gone = new Set(removed.map(e => e.uuid));
+    ctx.host.rememberPage({
+      ...last,
+      uuids: last.uuids.filter(u => !gone.has(u)),
+    });
+  }
 }
 
 /** How many of the newest page strokes to consider as the gesture. */
