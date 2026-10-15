@@ -19,7 +19,7 @@ import {
   type MotionEvent,
 } from 'sn-plugin-lib';
 import type {Box, Pt} from './geometry';
-import type {Host, PageElement} from './selector';
+import type {Host, PageContent, PageElement} from './selector';
 import {status} from './status';
 
 interface Response<T> {
@@ -595,7 +595,7 @@ export function createHost(
   let tracedFallback = false;
   // The strokes on the page after the last gesture, to spot changes made
   // outside the plugin (a lasso delete, the eraser).
-  let pageContent: {path: string; page: number; uuids: string[]} | null = null;
+  let pageContent: PageContent | null = null;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
   // Both file permissions were "always allow" at the last check: no need to
@@ -919,21 +919,21 @@ export function createHost(
       }
     },
 
-    clearElementCache() {
-      try {
-        PluginCommAPI.clearElementCache();
-      } catch (e) {
-        trace(`clearElementCache threw: ${message(e)}`);
-        return false;
+    async deleteFromFile(path, page, numsInPage) {
+      const ok = await call<boolean>('deleteElements (file)', () =>
+        PluginFileAPI.deleteElements(path, page, numsInPage),
+      );
+      if (ok !== true) {
+        fileCallFailed('deleteElements');
       }
-      // Every element read so far is unusable now, the strokes kept for
-      // Restore included.
-      fetched = [];
-      if (erased) {
-        erased = null;
-        trace('the last erase can no longer be restored');
-      }
-      return true;
+      return ok === true;
+    },
+
+    async reloadNote() {
+      const reloaded = await call<unknown>('reloadFile', () =>
+        PluginCommAPI.reloadFile(),
+      );
+      return reloaded !== null && reloaded !== false;
     },
 
     async reloadIfQuiet() {
@@ -971,17 +971,6 @@ export function createHost(
         fileCallFailed('lassoElements');
       }
       return ok === true;
-    },
-
-    async lassoUuids() {
-      const held = await call<Element[]>('getLassoElements', () =>
-        PluginCommAPI.getLassoElements(),
-      );
-      if (!Array.isArray(held)) {
-        return null;
-      }
-      // Tracked so they are freed with the others.
-      return wrap(held).map(e => e.uuid);
     },
 
     async askAboveOrBelow() {

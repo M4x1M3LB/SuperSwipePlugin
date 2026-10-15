@@ -9,7 +9,8 @@ const mockHasPermission = jest.fn();
 const mockRequestPermission = jest.fn();
 const mockSave = jest.fn();
 const mockGetElements = jest.fn();
-const mockClearCache = jest.fn();
+const mockFileDelete = jest.fn();
+const mockReload = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -21,10 +22,11 @@ jest.mock('sn-plugin-lib', () => ({
     recycleElement: (uuid: string) => mockRecycle(uuid),
     getCurrentFilePath: () => mockCurrentPath(),
     insertPageElements: (...args: unknown[]) => mockInsert(...args),
-    clearElementCache: () => mockClearCache(),
+    reloadFile: () => mockReload(),
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
+    deleteElements: (...args: unknown[]) => mockFileDelete(...args),
   },
   PluginNoteAPI: {saveCurrentNote: () => mockSave()},
   NativeUIUtils: {},
@@ -163,16 +165,14 @@ describe('release', () => {
   });
 });
 
-describe('element cache', () => {
-  it('clears the native cache and forgets what it held, Restore included', async () => {
+describe('editing the saved note', () => {
+  it('deletes from the note file, then reloads the note', async () => {
+    mockFileDelete.mockResolvedValueOnce(ok(true));
+    mockReload.mockResolvedValueOnce(ok(true));
     const host = createHost(new PenTracker(), {pointApi: null});
-    const [a] = host.wrap(strokes('a'));
-    host.rememberErased('/n.note', 2, 0, [a]);
-    expect(host.clearElementCache()).toBe(true);
-    expect(mockClearCache).toHaveBeenCalledTimes(1);
-    expect(await host.restoreLastErase()).toBe('Nothing to restore.');
-    host.release();
-    expect(mockRecycle).not.toHaveBeenCalled(); // nothing left to free
+    expect(await host.deleteFromFile('/n.note', 2, [7])).toBe(true);
+    expect(mockFileDelete).toHaveBeenCalledWith('/n.note', 2, [7]);
+    expect(await host.reloadNote()).toBe(true);
   });
 });
 

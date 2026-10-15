@@ -137,17 +137,17 @@ Margin wave to erase:
   used since the save (it would be lost).
 
 Strokes deleted outside the plugin (the lasso toolbar's delete, the
-eraser): seen on device, the save after such a delete is right (the
-strokes are gone from the note), yet they came back during the plugin's
-next edit, even after reloading the note. The SDK keeps every element a
-plugin reads in a native cache, and that cache still held them (in early
-versions even the removed loop came back with them). So the plugin
-remembers which strokes were on the page after each gesture; when some
-have gone at the next one, it clears that cache before editing ("page
-changed outside the plugin", "element cache cleared before editing"),
-then reads the page back once and says whether any came back ("after the
-edit: N of M removed stroke(s) came back"). Clearing the cache also ends
-the chance to restore the last erase.
+eraser): seen on device, the note saved after such a delete no longer
+has them, yet the plugin's next edit through the page being shown
+brought them back, for real (selectable, surviving a page turn), and a
+reload or clearing the SDK's element cache did not stop it. So the
+plugin remembers which strokes were on the page after each gesture; when
+some have gone at the next one ("page changed outside the plugin"), it
+removes its gesture stroke from the saved note itself and reloads the
+note, instead of editing the page being shown. It then reads the page
+back and counts its elements ("after the edit: N element(s), expected
+M"), and each gesture says when the page has more new elements than pen
+touches since the last one ("strokes came back").
 
 ## Limitations (Supernote SDK)
 
@@ -174,7 +174,7 @@ the chance to restore the last erase.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.32.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.33.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
