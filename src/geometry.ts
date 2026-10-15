@@ -728,9 +728,9 @@ export interface BlockOptions {
 
 export const DEFAULT_BLOCK_OPTIONS: BlockOptions = {
   minGap: 8,
-  maxFirstGapRatio: 0.15,
+  maxFirstGapRatio: 0.35,
   maxChainGapRatio: 0.1,
-  minCoverage: 0.5,
+  minCoverage: 0,
 };
 
 /**

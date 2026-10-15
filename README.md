@@ -92,9 +92,8 @@ Margin bar to select:
   page: on a two-column page, only the nearest column.
 - It stays ink when: it touches or runs through the writing, there is
   writing level with it on both sides (a column divider), the nearest
-  writing is closer than 8 px or further than 15 % of the page width, the
-  writing beside it covers less than half its height (an axis with a
-  label), a tall bracket or border faces it (a matrix, a table), more
+  writing is closer than 8 px or further than 35 % of the page width, a
+  tall bracket or border faces it (a matrix, a table), more
   writing follows it in the same burst of strokes, or the pen touches the
   screen again before it is removed (a brace followed by its label).
 - A stroke shorter than 100 px never causes the page to be read, so "l",
@@ -171,7 +170,7 @@ can put them back.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.34.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.35.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

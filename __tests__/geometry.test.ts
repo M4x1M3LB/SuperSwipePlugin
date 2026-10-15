@@ -374,7 +374,7 @@ describe('findBlockBesideBar', () => {
     });
   });
 
-  it('refuses dividers, bars in the text, axes and brackets', () => {
+  it('refuses dividers, bars in the text and brackets; one word is enough', () => {
     expect(findBlockBesideBar(bar, [...lines(100), box(0, 500)], 1404)).toEqual(
       {
         reason: 'writing on both sides of the bar',
@@ -383,14 +383,20 @@ describe('findBlockBesideBar', () => {
     expect(findBlockBesideBar(bar, [box(55, 580)], 1404)).toEqual({
       reason: 'bar runs through the writing',
     });
+    // A single word beside a tall bar is enough.
     expect(findBlockBesideBar(bar, [box(100, 580)], 1404)).toEqual({
-      reason: 'too little writing beside the bar (an axis?)',
+      indices: [0],
+      side: 'right',
     });
     expect(
       findBlockBesideBar(bar, [...lines(100), box(300, 495, 10, 210)], 1404),
     ).toEqual({reason: 'a bracket or border faces the bar'});
     expect(findBlockBesideBar(bar, [box(500, 580, 30, 160)], 1404)).toEqual({
-      reason: 'writing too far from the bar (428 px)',
+      indices: [0],
+      side: 'right',
+    });
+    expect(findBlockBesideBar(bar, [box(600, 580, 30, 160)], 1404)).toEqual({
+      reason: 'writing too far from the bar (528 px)',
     });
     expect(findBlockBesideBar(bar, [box(400, 1500)], 1404)).toEqual({
       reason: 'no writing beside the bar',
