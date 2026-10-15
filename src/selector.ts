@@ -122,11 +122,10 @@ export interface Host {
    */
   reloadIfQuiet(): Promise<boolean>;
   /**
-   * Save the note, read the page back (so the save has landed), then reload
-   * the note: the device drops any stale copy of the page, and nothing
-   * written is lost since it was just saved. Returns whether it reloaded.
+   * Clear the SDK's native cache of elements read so far. Elements read
+   * before become unusable. Returns whether it was cleared.
    */
-  saveAndReload(path: string, page: number): Promise<boolean>;
+  clearElementCache(): boolean;
   /**
    * Free the native caches of the elements read so far, except remembered
    * erased elements and the elements with these uuids (strokes still
@@ -168,11 +167,13 @@ interface Context {
   trace: (line: string) => void;
   screenRefresh: boolean;
   /**
-   * Strokes were removed outside the plugin since its last gesture: the
-   * device's copy of the page may still hold them, and the plugin's next
-   * edit would write them back. Reload the note before editing.
+   * Strokes removed outside the plugin since its last gesture (lasso
+   * delete, eraser). The SDK's element cache, filled by the plugin's
+   * earlier page reads, still holds them, and the plugin's next edit was
+   * seen writing them back: clear it before editing.
    */
-  resync: boolean;
+  removedOutside: string[];
+  cacheCleared?: boolean;
   /** The page size, when already read or being read. */
   size?: Promise<PageSize | null>;
 }
@@ -435,7 +436,7 @@ export async function handlePenUp(
   await host.closeLasso();
   const elements = await host.getPageElements(path, page);
   checkLastSelection(host, path, page, elements, trace);
-  const resync = changedOutside(host, path, page, elements, trace);
+  const removedOutside = changedOutside(host, path, page, elements, trace);
   trace(
     `page elements: ${elements.length} (saved and read in ${
       Date.now() - readFrom
@@ -477,7 +478,7 @@ export async function handlePenUp(
     isCancelled,
     trace,
     screenRefresh: gestures.screenRefresh ?? true,
-    resync,
+    removedOutside,
     size,
   };
   if (isStraight) {
@@ -997,6 +998,7 @@ async function eraseNextToMark(
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   forgetRemoved(ctx, [...erased, stroke]);
+  await checkRemovedStayGone(ctx);
   await repaint(ctx, removed.fileClean);
   // After the reload: recycling the previous erase's strokes never goes
   // ahead of it.
@@ -1109,6 +1111,7 @@ async function removeAndSelect(
   }
   forgetRemoved(ctx, [stroke]);
   ctx.trace(`${name} removed`);
+  await checkRemovedStayGone(ctx);
   ctx.trace(`lasso: ${rect.left},${rect.top} → ${rect.right},${rect.bottom}`);
   if (!(await host.lassoRect(rect))) {
     return {kind: 'failed', reason: 'could not create lasso selection'};
@@ -1204,16 +1207,32 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   if (path !== ctx.path || page !== ctx.page) {
     return {kind: 'ignored', reason: 'page changed'};
   }
-  if (ctx.resync) {
-    // The file was just saved and read, so it is right: reloading makes
-    // the device drop its stale copy before the plugin edits the page.
-    if (!(await ctx.host.saveAndReload(ctx.path, ctx.page))) {
-      return {kind: 'ignored', reason: 'could not reload the note first'};
+  if (ctx.removedOutside.length > 0 && !ctx.cacheCleared) {
+    // Everything needed from the elements read (points, numbers) has been
+    // taken by now.
+    if (!ctx.host.clearElementCache()) {
+      return {kind: 'ignored', reason: 'could not clear the element cache'};
     }
-    ctx.trace('note reloaded before editing');
-    ctx.resync = false;
+    ctx.cacheCleared = true;
+    ctx.trace('element cache cleared before editing');
   }
   return null;
+}
+
+/**
+ * Diagnostic after the first edit following strokes removed outside the
+ * plugin: read the page back and say whether any of them came back.
+ */
+async function checkRemovedStayGone(ctx: Context): Promise<void> {
+  if (ctx.removedOutside.length === 0) {
+    return;
+  }
+  const removed = new Set(ctx.removedOutside);
+  const page = await ctx.host.getPageElements(ctx.path, ctx.page);
+  const back = page.filter(e => removed.has(e.uuid)).length;
+  ctx.trace(
+    `after the edit: ${back} of ${removed.size} removed stroke(s) came back`,
+  );
 }
 
 /**
@@ -1226,19 +1245,19 @@ function changedOutside(
   page: number,
   elements: PageElement[],
   trace: (line: string) => void,
-): boolean {
+): string[] {
   const last = host.lastPage();
   const now = elements.map(e => e.uuid);
   host.rememberPage({path, page, uuids: now});
   if (!last || last.path !== path || last.page !== page) {
-    return false;
+    return [];
   }
   const present = new Set(now);
-  const gone = last.uuids.filter(u => !present.has(u)).length;
-  if (gone > 0) {
-    trace(`page changed outside the plugin: ${gone} stroke(s) removed`);
+  const gone = last.uuids.filter(u => !present.has(u));
+  if (gone.length > 0) {
+    trace(`page changed outside the plugin: ${gone.length} stroke(s) removed`);
   }
-  return gone > 0;
+  return gone;
 }
 
 /** The plugin removed these strokes: not a change made outside it. */

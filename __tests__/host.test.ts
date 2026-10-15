@@ -12,7 +12,7 @@ const mockGetElements = jest.fn();
 const mockGetLassoRect = jest.fn();
 const mockSetLassoBoxState = jest.fn();
 const mockDeleteLasso = jest.fn();
-const mockReload = jest.fn();
+const mockClearCache = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -27,7 +27,7 @@ jest.mock('sn-plugin-lib', () => ({
     getLassoRect: () => mockGetLassoRect(),
     setLassoBoxState: (state: number) => mockSetLassoBoxState(state),
     deleteLassoElements: () => mockDeleteLasso(),
-    reloadFile: () => mockReload(),
+    clearElementCache: () => mockClearCache(),
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
@@ -169,24 +169,16 @@ describe('release', () => {
   });
 });
 
-describe('save and reload', () => {
-  it('saves, reads the page back, then reloads', async () => {
-    const order: string[] = [];
-    mockSave.mockImplementationOnce(async () => {
-      order.push('save');
-      return ok(true);
-    });
-    mockGetElements.mockImplementationOnce(async () => {
-      order.push('read');
-      return ok([]);
-    });
-    mockReload.mockImplementationOnce(async () => {
-      order.push('reload');
-      return ok(true);
-    });
+describe('element cache', () => {
+  it('clears the native cache and forgets what it held, Restore included', async () => {
     const host = createHost(new PenTracker(), {pointApi: null});
-    expect(await host.saveAndReload('/n.note', 2)).toBe(true);
-    expect(order).toEqual(['save', 'read', 'reload']);
+    const [a] = host.wrap(strokes('a'));
+    host.rememberErased('/n.note', 2, 0, [a]);
+    expect(host.clearElementCache()).toBe(true);
+    expect(mockClearCache).toHaveBeenCalledTimes(1);
+    expect(await host.restoreLastErase()).toBe('Nothing to restore.');
+    host.release();
+    expect(mockRecycle).not.toHaveBeenCalled(); // nothing left to free
   });
 });
 

@@ -128,8 +128,8 @@ function fakeHost(
     },
     penDownCount: () => 0,
     closeLasso: async () => {},
-    saveAndReload: async () => {
-      host.calls.push('reload');
+    clearElementCache: () => {
+      host.calls.push('clear');
       return true;
     },
     rememberPage: next => {
@@ -1505,7 +1505,7 @@ describe('handlePenUp: strokes removed outside the plugin', () => {
     return {host2, loop2, second};
   }
 
-  it('reloads the note before editing, so the device cannot write them back', async () => {
+  it('clears the element cache before editing, then checks they stay gone', async () => {
     const {host2, loop2} = await afterOutsideDelete();
     const lines: string[] = [];
 
@@ -1514,20 +1514,23 @@ describe('handlePenUp: strokes removed outside the plugin', () => {
         trace: l => lines.push(l),
       }),
     ).toMatchObject({kind: 'selected', count: 1});
-    expect(host2.calls).toEqual(['reload', 'delete', 'lasso']);
+    expect(host2.calls).toEqual(['clear', 'delete', 'lasso']);
     expect(lines).toContain(
       'page changed outside the plugin: 1 stroke(s) removed',
     );
-    expect(lines).toContain('note reloaded before editing');
+    expect(lines).toContain('element cache cleared before editing');
+    expect(lines).toContain(
+      'after the edit: 0 of 1 removed stroke(s) came back',
+    );
   });
 
-  it('leaves the gesture as ink when it cannot reload first', async () => {
+  it('leaves the gesture as ink when it cannot clear the cache first', async () => {
     const {host2, loop2} = await afterOutsideDelete();
-    host2.saveAndReload = async () => false;
+    host2.clearElementCache = () => false;
 
     expect(await handlePenUp([loop2], host2, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'could not reload the note first',
+      reason: 'could not clear the element cache',
     });
     expect(host2.deleted).toEqual([]);
   });

@@ -926,18 +926,21 @@ export function createHost(
       }
     },
 
-    async saveAndReload(path, page) {
-      // Reading the page back makes sure the save has landed: a reload that
-      // reads the file before then brings old strokes back.
-      await this.getPageElements(path, page);
-      const reloaded = await call<unknown>('reloadFile', () =>
-        PluginCommAPI.reloadFile(),
-      );
-      const ok = reloaded !== null && reloaded !== false;
-      if (!ok) {
-        fileCallFailed('reloadFile');
+    clearElementCache() {
+      try {
+        PluginCommAPI.clearElementCache();
+      } catch (e) {
+        trace(`clearElementCache threw: ${message(e)}`);
+        return false;
       }
-      return ok;
+      // Every element read so far is unusable now, the strokes kept for
+      // Restore included.
+      fetched = [];
+      if (erased) {
+        erased = null;
+        trace('the last erase can no longer be restored');
+      }
+      return true;
     },
 
     async reloadIfQuiet() {
