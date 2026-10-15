@@ -147,37 +147,6 @@ export function startGestures(): void {
   });
 }
 
-/**
- * The lasso toolbar's SuperSwipe Delete button: delete the selection
- * through the plugin API, the one that made it (the device's own Delete
- * does not always keep its delete for plugin-made selections).
- */
-export async function deleteSelection(): Promise<void> {
-  if (!host) {
-    return;
-  }
-  const lines: string[] = [];
-  host.setTrace(line => lines.push(line));
-  const selection = host.lastSelection();
-  const selected = selection?.uuids.length ?? 0;
-  const ok = await host.deleteSelection();
-  const page = host.lastPage();
-  if (ok && selection && page) {
-    // Removed by the plugin: not a change made outside it.
-    const gone = new Set(selection.uuids);
-    host.rememberPage({...page, uuids: page.uuids.filter(u => !gone.has(u))});
-  }
-  lines.push(
-    ok ? 'deleted the selection (SuperSwipe Delete)' : 'delete failed',
-  );
-  status.setLast(
-    ok
-      ? {kind: 'erased', count: selected}
-      : {kind: 'failed', reason: 'could not delete the selection'},
-    lines,
-  );
-}
-
 /** Put back the strokes removed by the last margin-wave erase. */
 export async function restoreLastErase(): Promise<string> {
   if (!host) {

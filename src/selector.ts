@@ -100,16 +100,6 @@ export interface Host {
     content: {path: string; page: number; uuids: string[]} | null,
   ): void;
   lastPage(): {path: string; page: number; uuids: string[]} | null;
-  /** Close a lasso box left open on the page, if any. */
-  closeLasso(): Promise<void>;
-  /**
-   * Remember the strokes a gesture just selected (null to forget), so the
-   * next gesture can tell whether they were deleted with the lasso toolbar.
-   */
-  rememberSelection(
-    selection: {path: string; page: number; uuids: string[]} | null,
-  ): void;
-  lastSelection(): {path: string; page: number; uuids: string[]} | null;
   /** How many times the pen has touched the screen so far. */
   penDownCount(): number;
   /** Ask the user which side of a line to select; null if unanswered. */
@@ -431,11 +421,7 @@ export async function handlePenUp(
   }
 
   const readFrom = Date.now();
-  // A selection left open (possibly one the user deleted from) is closed
-  // before the page is saved and read.
-  await host.closeLasso();
   const elements = await host.getPageElements(path, page);
-  checkLastSelection(host, path, page, elements, trace);
   const removedOutside = changedOutside(host, path, page, elements, trace);
   trace(
     `page elements: ${elements.length} (saved and read in ${
@@ -1074,38 +1060,15 @@ async function deleteVerified(
 }
 
 /**
- * Diagnostic for deleted selections coming back: how many of the strokes
- * the last gesture selected on this page are still saved in the note. If
- * they were deleted with the lasso toolbar and are still saved, the device
- * did not keep that delete. Forgets the selection once checked.
- */
-function checkLastSelection(
-  host: Host,
-  path: string,
-  page: number,
-  elements: PageElement[],
-  trace: (line: string) => void,
-): void {
-  const last = host.lastSelection();
-  if (!last || last.path !== path || last.page !== page) {
-    return;
-  }
-  host.rememberSelection(null);
-  const present = new Set(elements.map(e => e.uuid));
-  const kept = last.uuids.filter(u => present.has(u)).length;
-  trace(`last selection: ${kept} of ${last.uuids.length} still in the note`);
-}
-
-/**
  * Remove the gesture stroke (one delete, no reload: speed matters), then
- * lasso `rect`, and remember what was selected. Returns the failure, if any.
+ * lasso `rect`. Returns the failure, if any.
  */
 async function removeAndSelect(
   ctx: Context,
   rect: Box,
   name: string,
 ): Promise<Outcome | null> {
-  const {host, path, page, stroke} = ctx;
+  const {host, page, stroke} = ctx;
   if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: `could not remove the ${name}`};
   }
@@ -1116,23 +1079,6 @@ async function removeAndSelect(
   if (!(await host.lassoRect(rect))) {
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
-  // What the lasso holds: the elements whose box meets it.
-  const outlines = await outlinesOf(ctx.others);
-  const uuids = ctx.others
-    .filter((_, i) => {
-      if (outlines[i].length === 0) {
-        return false;
-      }
-      const b = boundingBox(outlines[i]);
-      return (
-        b.left <= rect.right &&
-        b.right >= rect.left &&
-        b.top <= rect.bottom &&
-        b.bottom >= rect.top
-      );
-    })
-    .map(e => e.uuid);
-  host.rememberSelection({path, page, uuids});
   return null;
 }
 

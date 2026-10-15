@@ -565,11 +565,6 @@ export interface DeviceHost extends Host {
   wrap(elements: Element[]): PageElement[];
   /** Put the strokes from the last margin-wave erase back. Returns a message. */
   restoreLastErase(): Promise<string>;
-  /**
-   * Delete what the lasso holds through the plugin API (the lasso toolbar
-   * button), the same API that made the selection.
-   */
-  deleteSelection(): Promise<boolean>;
   /** The stroke's "time:" trace line. */
   timeLine(totalMs: number): string;
   /** Did handling the stroke read the page (save and getElements)? */
@@ -598,8 +593,6 @@ export function createHost(
   // Which way points were read for this stroke, traced once each.
   let tracedDirect = false;
   let tracedFallback = false;
-  // What the last gesture selected, to spot it being deleted (ghosts).
-  let selection: {path: string; page: number; uuids: string[]} | null = null;
   // The strokes on the page after the last gesture, to spot changes made
   // outside the plugin (a lasso delete, the eraser).
   let pageContent: {path: string; page: number; uuids: string[]} | null = null;
@@ -966,40 +959,8 @@ export function createHost(
       return pageContent;
     },
 
-    rememberSelection(next) {
-      selection = next;
-    },
-
-    lastSelection() {
-      return selection;
-    },
-
     penDownCount() {
       return pen.downCount();
-    },
-
-    async deleteSelection() {
-      const ok = await call<boolean>('deleteLassoElements', () =>
-        PluginCommAPI.deleteLassoElements(),
-      );
-      if (ok !== true) {
-        fileCallFailed('deleteLassoElements');
-      }
-      return ok === true;
-    },
-
-    async closeLasso() {
-      const rect = await call<{left: number; right: number} | null>(
-        'getLassoRect',
-        () => PluginCommAPI.getLassoRect(),
-      );
-      if (rect && rect.right > rect.left) {
-        // 2: completely remove the lasso box.
-        const closed = await call<boolean>('setLassoBoxState', () =>
-          PluginCommAPI.setLassoBoxState(2),
-        );
-        trace(`closed a lasso left open: ${closed === true ? 'ok' : 'failed'}`);
-      }
     },
 
     async lassoRect(rect: Box) {

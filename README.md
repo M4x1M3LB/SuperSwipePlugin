@@ -147,8 +147,7 @@ have gone at the next one, it clears that cache before editing ("page
 changed outside the plugin", "element cache cleared before editing"),
 then reads the page back once and says whether any came back ("after the
 edit: N of M removed stroke(s) came back"). Clearing the cache also ends
-the chance to restore the last erase. The lasso toolbar also has a
-SuperSwipe **Delete** button, which deletes through the plugin API.
+the chance to restore the last erase.
 
 ## Limitations (Supernote SDK)
 
@@ -175,7 +174,7 @@ SuperSwipe **Delete** button, which deletes through the plugin API.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.30.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.31.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
