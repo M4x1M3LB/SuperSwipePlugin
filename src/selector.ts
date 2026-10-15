@@ -96,8 +96,8 @@ export interface Host {
   /** The lasso box, or null if there is none. */
   lassoBox(): Promise<Box | null>;
   /**
-   * Experiment: completely remove the lasso box, hoping it resets the
-   * device's working copy of the page as the stock lasso tool does.
+   * Completely remove the lasso box: resets the device's working copy of
+   * the page, as the stock lasso tool does (confirmed on device).
    */
   resetLasso(): Promise<string>;
   /** Show, hide or completely remove the lasso box; says how it went. */
@@ -1227,7 +1227,8 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   }
   // Seen on device: strokes deleted with the device's delete from a
   // plugin-made selection come back at the plugin's next edit, unless the
-  // stock lasso tool was used in between. Try the same reset first.
+  // stock lasso tool was used in between. The same reset first prevents it
+  // (confirmed on device).
   ctx.trace(`lasso reset: ${await ctx.host.resetLasso()}`);
   return null;
 }

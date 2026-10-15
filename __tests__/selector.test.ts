@@ -1485,7 +1485,7 @@ describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
   });
 });
 
-describe('lasso reset before editing (experiment)', () => {
+describe('lasso reset before editing', () => {
   beforeEach(() => {
     nextNum = 1;
   });

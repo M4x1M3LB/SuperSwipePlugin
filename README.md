@@ -135,15 +135,16 @@ Margin wave to erase:
   save has finished brings old strokes back), and only if the pen was not
   used since the save (it would be lost).
 
-Deleting a selection: use **Delete** with the LasEr icon in the
-lasso toolbar, not the device's own delete. Seen on device: strokes
-deleted with the device's delete from a selection the plugin made came
-back (for real) at the plugin's next edit, while strokes erased by the
-plugin (the margin wave) stay gone. LasEr Delete deletes the
-selection the way the wave erases: the lasso is closed, the page saved
-and read, the selected elements deleted (found by id, or else by the
-lasso box) and checked, the screen refreshed, and **Restore last erase**
-can put them back.
+Deleting a selection: the device's own delete and **LasEr Delete** (LasEr
+icon in the lasso toolbar) both work. Seen on device: strokes deleted
+with the device's delete from a selection the plugin made came back (for
+real) at the plugin's next edit, unless the stock lasso tool was used in
+between, which resets the device's working copy of the page. So before
+every edit the plugin completely removes the lasso box, which does the
+same reset ("lasso reset: ok" in the trace): no phantom strokes since.
+LasEr Delete deletes the selection the way the wave erases (lasso closed,
+page saved and read, elements deleted and checked, screen refreshed), and
+**Restore last erase** can put them back.
 
 ## Limitations (Supernote SDK)
 
