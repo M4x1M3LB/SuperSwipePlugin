@@ -128,6 +128,10 @@ function fakeHost(
     },
     penDownCount: () => 0,
     closeLasso: async () => {},
+    saveAndReload: async () => {
+      host.calls.push('reload');
+      return true;
+    },
     rememberPage: next => {
       host.pageContent = next;
     },
@@ -1519,11 +1523,11 @@ describe('handlePenUp: strokes removed outside the plugin', () => {
 
   it('leaves the gesture as ink when it cannot reload first', async () => {
     const {host2, loop2} = await afterOutsideDelete();
-    host2.reloadIfQuiet = async () => false;
+    host2.saveAndReload = async () => false;
 
     expect(await handlePenUp([loop2], host2, DEFAULT_CONFIG)).toEqual({
       kind: 'ignored',
-      reason: 'could not reload the note first (the pen was used)',
+      reason: 'could not reload the note first',
     });
     expect(host2.deleted).toEqual([]);
   });

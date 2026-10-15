@@ -12,6 +12,7 @@ const mockGetElements = jest.fn();
 const mockGetLassoRect = jest.fn();
 const mockSetLassoBoxState = jest.fn();
 const mockDeleteLasso = jest.fn();
+const mockReload = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -26,6 +27,7 @@ jest.mock('sn-plugin-lib', () => ({
     getLassoRect: () => mockGetLassoRect(),
     setLassoBoxState: (state: number) => mockSetLassoBoxState(state),
     deleteLassoElements: () => mockDeleteLasso(),
+    reloadFile: () => mockReload(),
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
@@ -164,6 +166,27 @@ describe('release', () => {
     );
     mockInsert.mockResolvedValue(ok(true));
     expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+  });
+});
+
+describe('save and reload', () => {
+  it('saves, reads the page back, then reloads', async () => {
+    const order: string[] = [];
+    mockSave.mockImplementationOnce(async () => {
+      order.push('save');
+      return ok(true);
+    });
+    mockGetElements.mockImplementationOnce(async () => {
+      order.push('read');
+      return ok([]);
+    });
+    mockReload.mockImplementationOnce(async () => {
+      order.push('reload');
+      return ok(true);
+    });
+    const host = createHost(new PenTracker(), {pointApi: null});
+    expect(await host.saveAndReload('/n.note', 2)).toBe(true);
+    expect(order).toEqual(['save', 'read', 'reload']);
   });
 });
 

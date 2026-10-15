@@ -926,6 +926,20 @@ export function createHost(
       }
     },
 
+    async saveAndReload(path, page) {
+      // Reading the page back makes sure the save has landed: a reload that
+      // reads the file before then brings old strokes back.
+      await this.getPageElements(path, page);
+      const reloaded = await call<unknown>('reloadFile', () =>
+        PluginCommAPI.reloadFile(),
+      );
+      const ok = reloaded !== null && reloaded !== false;
+      if (!ok) {
+        fileCallFailed('reloadFile');
+      }
+      return ok;
+    },
+
     async reloadIfQuiet() {
       // Anything written since the last save would be lost by the reload.
       if (!pen.quietSince(savedAt)) {

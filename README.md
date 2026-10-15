@@ -143,9 +143,9 @@ the plugin's next edit wrote them back. So the plugin remembers which
 strokes were on the page after each gesture; when some have gone at the
 next one, it reloads the note from the just-saved file before editing
 anything ("page changed outside the plugin" and "note reloaded before
-editing" in the trace). Only a pen touch since the save blocks that
-reload (hovering does not); then the gesture stays as ink, never risking
-the deleted strokes. The lasso toolbar also has a SuperSwipe **Delete**
+editing" in the trace). Right before that reload the note is saved again
+and read back, so nothing written in the meantime is lost; if the reload
+fails, the gesture stays as ink, never risking the deleted strokes. The lasso toolbar also has a SuperSwipe **Delete**
 button, which deletes through the plugin API.
 
 ## Limitations (Supernote SDK)
@@ -173,7 +173,7 @@ button, which deletes through the plugin API.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.28.snplg` (ready to install, or your own
+1. Copy `release/SuperSwipe-0.0.29.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.

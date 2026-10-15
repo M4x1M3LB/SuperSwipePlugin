@@ -122,6 +122,12 @@ export interface Host {
    */
   reloadIfQuiet(): Promise<boolean>;
   /**
+   * Save the note, read the page back (so the save has landed), then reload
+   * the note: the device drops any stale copy of the page, and nothing
+   * written is lost since it was just saved. Returns whether it reloaded.
+   */
+  saveAndReload(path: string, page: number): Promise<boolean>;
+  /**
    * Free the native caches of the elements read so far, except remembered
    * erased elements and the elements with these uuids (strokes still
    * waiting to be handled).
@@ -1201,11 +1207,8 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   if (ctx.resync) {
     // The file was just saved and read, so it is right: reloading makes
     // the device drop its stale copy before the plugin edits the page.
-    if (!(await ctx.host.reloadIfQuiet())) {
-      return {
-        kind: 'ignored',
-        reason: 'could not reload the note first (the pen was used)',
-      };
+    if (!(await ctx.host.saveAndReload(ctx.path, ctx.page))) {
+      return {kind: 'ignored', reason: 'could not reload the note first'};
     }
     ctx.trace('note reloaded before editing');
     ctx.resync = false;
