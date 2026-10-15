@@ -20,7 +20,6 @@ import {
 } from 'sn-plugin-lib';
 import type {Box, Pt} from './geometry';
 import type {Host, PageElement} from './selector';
-import {status} from './status';
 
 interface Response<T> {
   success: boolean;
@@ -162,12 +161,10 @@ export class PenTracker {
   }
 
   private onMotion(event: MotionEvent | null | undefined): void {
-    const action = event?.action;
-    // Counted before any filtering, to see what the host sends.
-    status.countMotion(typeof action === 'number' ? action : -1);
     if (event?.toolType !== TOOL_PEN) {
       return;
     }
+    const action = event.action;
     // Hover (7, 9, 10) and anything else that is not a touch: the pen is
     // not on the screen, and nothing written.
     if (
@@ -494,7 +491,7 @@ function recycleAll(elements: (Element | null | undefined)[]): void {
 }
 
 const PERMISSION_REASON =
-  'SuperSwipe needs file access to remove gesture strokes, select what a loop encloses, what lies above or below a line or beside a margin bar, and erase a line of writing next to a margin wave.';
+  'LasEr needs file access to remove gesture strokes, select what a loop encloses, what lies above or below a line or beside a margin bar, and erase a line of writing next to a margin wave.';
 
 function granted(state: unknown): boolean {
   return typeof state === 'number' && state >= 1;

@@ -1435,7 +1435,7 @@ describe('outlinesOf', () => {
   });
 });
 
-describe('deleteSelection (lasso toolbar SuperSwipe Delete)', () => {
+describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
   beforeEach(() => {
     nextNum = 1;
   });

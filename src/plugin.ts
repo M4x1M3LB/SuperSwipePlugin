@@ -57,9 +57,6 @@ export function startGestures(): void {
     const finish = (outcome: Outcome) => {
       try {
         trace(device.timeLine(Date.now() - startedAt));
-        if (device.pageWasRead()) {
-          status.countPageRead(outcome);
-        }
       } catch (e) {
         trace(`timing failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -151,7 +148,7 @@ export function startGestures(): void {
   });
 }
 
-/** The lasso toolbar's SuperSwipe Delete button. */
+/** The lasso toolbar's LasEr Delete button. */
 export async function deleteSelection(): Promise<void> {
   if (!host) {
     return;

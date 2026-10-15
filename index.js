@@ -24,7 +24,7 @@ PluginManager.registerConfigButtonListener({
 const SETTINGS_BUTTON_ID = 100;
 PluginManager.registerButton(1, ['NOTE'], {
   id: SETTINGS_BUTTON_ID,
-  name: 'SuperSwipe',
+  name: 'LasEr',
   icon: Image.resolveAssetSource(require('./assets/icon.png')).uri,
   showType: 1,
 });

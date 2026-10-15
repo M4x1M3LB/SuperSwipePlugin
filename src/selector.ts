@@ -1061,7 +1061,7 @@ async function removeAndSelect(
 }
 
 /**
- * The lasso toolbar's SuperSwipe Delete: delete what the lasso holds the
+ * The lasso toolbar's LasEr Delete: delete what the lasso holds the
  * way the margin wave erases (seen on device to stick, while the device's
  * own delete of a plugin-made selection came back at the plugin's next
  * edit): close the lasso, save and read the page, delete those elements,

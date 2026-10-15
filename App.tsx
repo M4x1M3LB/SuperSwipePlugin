@@ -1,5 +1,5 @@
 /**
- * SuperSwipe settings view. Black and white, no animation: e-ink friendly.
+ * LasEr settings view. Black and white, no animation: e-ink friendly.
  *
  * @format
  */
@@ -54,16 +54,16 @@ function App(): React.JSX.Element {
         <Text style={styles.closeText}>✕</Text>
       </Pressable>
 
-      <Text style={styles.title}>SuperSwipe</Text>
+      <Text style={styles.title}>LasEr</Text>
       <Text style={styles.body}>
         With a pen (not the marker): draw a closed loop around strokes to
         lasso-select them. A straight horizontal line, a few words long or more
         and clear of the writing, selects what is above or below it (you are
         asked which when there is writing on both sides). A vertical bar in the
         margin beside some lines selects that block. Delete a selection with the
-        SuperSwipe Delete button in the lasso toolbar. To erase a line of
-        writing, draw a sideways wave with five bounces or more (∿∿∿, three
-        waves) in the margin next to it, left or right, leaving a small gap.
+        LasEr Delete button in the lasso toolbar. To erase a line of writing,
+        draw a sideways wave with five bounces or more (∿∿∿, three waves) in the
+        margin next to it, left or right, leaving a small gap.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
@@ -84,11 +84,6 @@ function App(): React.JSX.Element {
 
       <Text style={styles.status}>{describeOutcome(s.lastOutcome())}</Text>
       <Text style={styles.traceLine}>Strokes received: {s.penUpCount()}</Text>
-      <Text style={styles.traceLine}>{s.pageReadSummary()}</Text>
-      <Text style={styles.traceLine}>
-        Screen listeners: {s.listenerCount()}. Pen events by action:{' '}
-        {s.motionSummary()}
-      </Text>
       {s.history().length > 1 && (
         <View style={styles.trace}>
           <Text style={styles.traceLine}>Recent strokes:</Text>

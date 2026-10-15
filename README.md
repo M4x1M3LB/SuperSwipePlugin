@@ -1,4 +1,4 @@
-# SuperSwipe — pen gestures for Supernote notes
+# LasEr — Lasso and Eraser pen gestures for Supernote notes
 
 A Supernote plugin for NOTE files, with four pen gestures:
 
@@ -135,11 +135,11 @@ Margin wave to erase:
   save has finished brings old strokes back), and only if the pen was not
   used since the save (it would be lost).
 
-Deleting a selection: use **Delete** with the SuperSwipe icon in the
+Deleting a selection: use **Delete** with the LasEr icon in the
 lasso toolbar, not the device's own delete. Seen on device: strokes
 deleted with the device's delete from a selection the plugin made came
 back (for real) at the plugin's next edit, while strokes erased by the
-plugin (the margin wave) stay gone. SuperSwipe Delete deletes the
+plugin (the margin wave) stay gone. LasEr Delete deletes the
 selection the way the wave erases: the lasso is closed, the page saved
 and read, the selected elements deleted (found by id, or else by the
 lasso box) and checked, the screen refreshed, and **Restore last erase**
@@ -170,17 +170,17 @@ can put them back.
 
 ## Using it
 
-1. Copy `release/SuperSwipe-0.0.35.snplg` (ready to install, or your own
+1. Copy `release/LasEr-0.0.36.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
-3. Open a note, tap the **SuperSwipe** toolbar button, then **Grant file
+3. Open a note, tap the **LasEr** toolbar button, then **Grant file
    access** and choose **Always allow** (needed to remove strokes; with
    "Always allow" the permissions are not checked again on every gesture).
 4. Draw a loop around some writing, a line under a section, a bar in the
    margin beside a paragraph, or a wave beside a line.
 
-The plugin screen (toolbar button, or Settings → Apps → Plugins → SuperSwipe)
+The plugin screen (toolbar button, or Settings → Apps → Plugins → LasEr)
 has an on/off switch per gesture, **Restore last erase**, and shows what
 happened to the last stroke, with a step-by-step trace ending with how long
 it took and a `time:` line (ms per device call; calls made in parallel are
@@ -212,5 +212,5 @@ Layout:
 | `src/config.ts` | Thresholds (pen types, loop, line, bar and wave rules) |
 | `src/status.ts` | State shared with the plugin screen: switches, last result, trace, recent strokes |
 
-`PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
+The plugin was called SuperSwipe during development: its internal names (`pluginKey`, `app.json` name, package name, build output) keep that name so devices update it in place. `PluginConfig.json` holds the plugin ID; do not change `pluginID` or the device
 will treat it as a different plugin. Bump `versionCode` for each release.
