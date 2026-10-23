@@ -126,7 +126,8 @@ export function startGestures(): void {
 
   // The floating undo/redo button: taps run one at a time, never while a
   // stroke is being handled.
-  let tapping = false;
+  // The undo/redo running, if any: when it started and what it traced.
+  let tapping: {since: number; lines: string[]} | null = null;
   const floating = new FloatingButton(
     () => status.gestures().undoButton ?? true,
     count => {
@@ -134,14 +135,40 @@ export function startGestures(): void {
         floating.hideByUser();
         return;
       }
-      if (busy || tapping) {
+      const what = count === 1 ? 'undo' : 'redo';
+      if (busy) {
+        status.setLast(
+          {
+            kind: 'ignored',
+            reason: `${what} skipped: a stroke is being handled`,
+          },
+          [`${what} (floating button) skipped: busy`],
+        );
         return;
       }
-      tapping = true;
-      const lines: string[] = [];
+      if (tapping) {
+        if (Date.now() - tapping.since < DEFAULT_CONFIG.timeoutMs) {
+          status.setLast(
+            {
+              kind: 'ignored',
+              reason: `${what} skipped: the last one is running`,
+            },
+            [`${what} (floating button) skipped: still running`],
+          );
+          return;
+        }
+        // Stuck: report where it stopped, then let this tap run.
+        status.setLast(
+          {kind: 'failed', reason: 'the last undo/redo never finished'},
+          [...tapping.lines, 'never finished'],
+        );
+      }
+      const lines: string[] = [`${what} (floating button)`];
       const trace = (line: string) => {
         lines.push(line);
       };
+      const current = {since: Date.now(), lines};
+      tapping = current;
       device.setTrace(trace);
       const action: Promise<Outcome> =
         count === 1
@@ -165,12 +192,13 @@ export function startGestures(): void {
           }),
         )
         .then(outcome => {
-          trace(
-            count === 1 ? 'undo (floating button)' : 'redo (floating button)',
-          );
+          if (tapping !== current) {
+            return; // reported as stuck, and a newer tap took over
+          }
+          trace(`took ${Date.now() - current.since} ms`);
           status.setLast(outcome, lines);
           release([], trace);
-          tapping = false;
+          tapping = null;
         });
     },
   );

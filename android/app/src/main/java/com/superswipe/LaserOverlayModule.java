@@ -47,6 +47,9 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
     private static ImageView button;
     private static WindowManager.LayoutParams params;
 
+    /** A delayed show, cancelled when the pen goes down again. */
+    private Runnable pendingShow = null;
+
     private int taps = 0;
     private final Runnable fireTaps = () -> {
         WritableMap payload = Arguments.createMap();
@@ -105,27 +108,37 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
 
     // ---- The button -------------------------------------------------------
 
-    /** Show the button with its top-left corner at (x, y) screen px, kept on screen. */
+    /**
+     * After delayMs (timed here: the plugin's JS timers can be paused), show
+     * the button gap dp to the left of screen point (x, y), its top level
+     * with y, kept on screen. A later hide() or showLeftOf() cancels it.
+     */
     @ReactMethod
-    public void showAt(double x, double y, Promise promise) {
+    public void showLeftOf(double x, double y, double gap, double delayMs, Promise promise) {
         main.post(() -> {
-            try {
-                if (!allowed()) {
-                    promise.resolve(false);
-                    return;
-                }
-                ensureButton();
-                DisplayMetrics m = getReactApplicationContext().getResources().getDisplayMetrics();
-                int size = dp(48);
-                params.x = clamp((int) Math.round(x), 0, Math.max(0, m.widthPixels - size));
-                params.y = clamp((int) Math.round(y), 0, Math.max(0, m.heightPixels - size));
-                params.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                button.setVisibility(View.VISIBLE);
-                wm.updateViewLayout(button, params);
-                promise.resolve(true);
-            } catch (Exception e) {
-                promise.reject("SHOW_FAILED", e.getMessage(), e);
+            if (pendingShow != null) {
+                main.removeCallbacks(pendingShow);
             }
+            pendingShow = () -> {
+                pendingShow = null;
+                try {
+                    if (!allowed()) {
+                        return;
+                    }
+                    ensureButton();
+                    DisplayMetrics m = getReactApplicationContext().getResources().getDisplayMetrics();
+                    int size = dp(48);
+                    int left = (int) Math.round(x) - dp((int) Math.round(gap)) - size;
+                    params.x = clamp(left, 0, Math.max(0, m.widthPixels - size));
+                    params.y = clamp((int) Math.round(y), 0, Math.max(0, m.heightPixels - size));
+                    params.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                    button.setVisibility(View.VISIBLE);
+                    wm.updateViewLayout(button, params);
+                } catch (Exception ignored) {
+                }
+            };
+            main.postDelayed(pendingShow, Math.max(0, (long) delayMs));
+            promise.resolve(allowed());
         });
     }
 
@@ -133,6 +146,10 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void hide(Promise promise) {
         main.post(() -> {
+            if (pendingShow != null) {
+                main.removeCallbacks(pendingShow);
+                pendingShow = null;
+            }
             try {
                 if (button != null && wm != null) {
                     button.setVisibility(View.INVISIBLE);

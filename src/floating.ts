@@ -2,8 +2,9 @@
  * The floating undo/redo button (native overlay window, see
  * android/.../LaserOverlayModule.java).
  *
- * - Hidden while the pen touches the screen; when it lifts, shown just right
- *   of the stroke, level with its top (screen px from the motion events).
+ * - Hidden while the pen touches the screen; 3 s after it lifts, shown well
+ *   left of the last stroke, level with its top (screen px from the motion
+ *   events).
  * - Finger taps on it, counted natively: 1 undo, 2 redo, 3 hide.
  * - A four-finger tap anywhere shows or hides it again.
  *
@@ -16,7 +17,12 @@ import type {MotionEvent} from 'sn-plugin-lib';
 interface OverlayNative {
   checkPermission(): Promise<boolean>;
   requestPermission(): Promise<boolean>;
-  showAt(x: number, y: number): Promise<boolean>;
+  showLeftOf(
+    x: number,
+    y: number,
+    gap: number,
+    delayMs: number,
+  ): Promise<boolean>;
   hide(): Promise<boolean>;
   remove(): Promise<boolean>;
 }
@@ -31,8 +37,10 @@ const ACTION_MOVE = 2;
 const ACTION_CANCEL = 3;
 const ACTION_POINTER_DOWN = 5;
 
-/** Gap between the stroke's right edge and the button, in screen px. */
-const GAP = 24;
+/** Gap between the stroke's left edge and the button, in dp. */
+const GAP_DP = 60;
+/** How long the pen must stay up before the button comes back, in ms. */
+const SHOW_DELAY_MS = 3000;
 
 export function overlayAvailable(): boolean {
   return native !== undefined;
@@ -114,7 +122,7 @@ export class FloatingButton {
         if (this.hiddenByUser) {
           native.hide().catch(() => {});
         } else {
-          this.show();
+          this.show(0);
         }
       } else if (action === ACTION_UP || action === ACTION_CANCEL) {
         this.fingersCounted = false;
@@ -128,11 +136,16 @@ export class FloatingButton {
     native?.hide().catch(() => {});
   }
 
-  /** Next to the last stroke, if there is one and it is not hidden. */
-  show(): void {
+  /**
+   * Left of the last stroke, after the pen has stayed up for a while (the
+   * native side times it and a pen-down cancels it).
+   */
+  show(delayMs = SHOW_DELAY_MS): void {
     if (!native || this.hiddenByUser || !this.box) {
       return;
     }
-    native.showAt(this.box.right + GAP, this.box.top).catch(() => {});
+    native
+      .showLeftOf(this.box.left, this.box.top, GAP_DP, delayMs)
+      .catch(() => {});
   }
 }

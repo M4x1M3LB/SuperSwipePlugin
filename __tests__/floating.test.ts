@@ -1,7 +1,7 @@
 const mockNative = {
   checkPermission: jest.fn(async () => true),
   requestPermission: jest.fn(async () => true),
-  showAt: jest.fn(async () => true),
+  showLeftOf: jest.fn(async () => true),
   hide: jest.fn(async () => true),
   remove: jest.fn(async () => true),
 };
@@ -30,7 +30,7 @@ describe('FloatingButton', () => {
     mockTapListeners.length = 0;
   });
 
-  it('hides while the pen is down, then shows right of the stroke', () => {
+  it('hides while the pen is down, then shows left of the stroke 3 s later', () => {
     const button = new FloatingButton(
       () => true,
       () => {},
@@ -39,9 +39,9 @@ describe('FloatingButton', () => {
     expect(mockNative.hide).toHaveBeenCalledTimes(1);
     button.onMotion(pen(2, 400, 280));
     button.onMotion(pen(2, 250, 340));
-    expect(mockNative.showAt).not.toHaveBeenCalled();
+    expect(mockNative.showLeftOf).not.toHaveBeenCalled();
     button.onMotion(pen(1, 250, 340));
-    expect(mockNative.showAt).toHaveBeenCalledWith(424, 280);
+    expect(mockNative.showLeftOf).toHaveBeenCalledWith(100, 280, 60, 3000);
   });
 
   it('passes finger taps on, and stays hidden after three taps', () => {
@@ -56,7 +56,7 @@ describe('FloatingButton', () => {
     button.hideByUser();
     button.onMotion(pen(0, 100, 300));
     button.onMotion(pen(1, 120, 310));
-    expect(mockNative.showAt).not.toHaveBeenCalled();
+    expect(mockNative.showLeftOf).not.toHaveBeenCalled();
   });
 
   it('shows or hides it again with a four-finger tap', () => {
@@ -66,7 +66,7 @@ describe('FloatingButton', () => {
     );
     button.onMotion(pen(0, 100, 300));
     button.onMotion(pen(1, 120, 310));
-    expect(mockNative.showAt).toHaveBeenCalledTimes(1);
+    expect(mockNative.showLeftOf).toHaveBeenCalledTimes(1);
 
     button.onMotion(fingers(0, 1));
     button.onMotion(fingers(261, 2));
@@ -77,7 +77,7 @@ describe('FloatingButton', () => {
     button.onMotion(fingers(1, 1)); // all up
 
     button.onMotion(fingers(773, 4)); // again: show by the last stroke
-    expect(mockNative.showAt).toHaveBeenCalledTimes(2);
+    expect(mockNative.showLeftOf).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing when switched off', () => {
@@ -89,7 +89,7 @@ describe('FloatingButton', () => {
     button.onMotion(pen(0, 100, 300));
     button.onMotion(pen(1, 120, 310));
     mockTapListeners[0]({count: 1});
-    expect(mockNative.showAt).not.toHaveBeenCalled();
+    expect(mockNative.showLeftOf).not.toHaveBeenCalled();
     expect(taps).toEqual([]);
   });
 });

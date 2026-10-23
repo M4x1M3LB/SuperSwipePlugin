@@ -148,15 +148,17 @@ page saved and read, elements deleted and checked, screen refreshed), and
 
 Floating undo/redo button:
 
-- After each stroke a small button appears just right of it, level with
-  its top. It disappears while the pen touches the screen and comes back
-  when the pen lifts.
+- It hides as soon as the pen touches the screen, and comes back once the
+  pen has stayed up for 3 seconds (timed natively), well to the left of
+  the last stroke (60 dp), level with its top.
 - Tap it with a **finger** (the pen writes through it into the note): once
   to undo the last stroke, twice to redo, three times to hide it. A
   **four-finger tap** anywhere shows or hides it again.
 - Undo removes the newest stroke on the page the way the margin wave
   erases (checked, screen refreshed); redo puts it back. Up to 20 undone
-  strokes can be redone; new writing clears them. Like every LasEr edit,
+  strokes can be redone; new writing clears them. Every tap is recorded in
+  the recent strokes, including why one was skipped (a stroke still being
+  handled, or the previous undo still running). Like every LasEr edit,
   it clears the device's own undo history for the page.
 - It is a system overlay window from LasEr's native module
   (`android/app/src/main/java/com/superswipe/LaserOverlayModule.java`), the
@@ -189,7 +191,7 @@ Floating undo/redo button:
 
 ## Using it
 
-1. Copy `release/LasEr-0.0.38.snplg` (ready to install, or your own
+1. Copy `release/LasEr-0.0.39.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
