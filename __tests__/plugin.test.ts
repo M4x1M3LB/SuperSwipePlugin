@@ -16,6 +16,7 @@ const mockRelease = jest.fn((pending?: string[]) => {
 jest.mock('../src/host', () => ({
   PenTracker: class {
     start() {}
+    onEvent() {}
   },
   createHost: () => ({
     setTrace: () => {},
@@ -23,6 +24,7 @@ jest.mock('../src/host', () => ({
     release: mockRelease,
     timeLine: () => 'time: test',
     pageWasRead: () => false,
+    clearRedo: () => {},
   }),
 }));
 const calls: {elements: unknown[]; finish: () => void}[] = [];

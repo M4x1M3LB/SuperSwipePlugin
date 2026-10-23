@@ -136,6 +136,9 @@ const ACTION_UP = 1;
 const ACTION_MOVE = 2;
 const ACTION_CANCEL = 3;
 
+/** How many undone strokes redo can put back. */
+const MAX_UNDONE = 20;
+
 /** A pen that sent no motion event for this long is treated as lifted. */
 const PEN_STALE_MS = 1000;
 
@@ -152,6 +155,13 @@ export class PenTracker {
   private lastEventAt = 0;
   private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
     [];
+  private listener: ((event: MotionEvent | null | undefined) => void) | null =
+    null;
+
+  /** Also pass every motion event (pen and finger) to `listener`. */
+  onEvent(listener: (event: MotionEvent | null | undefined) => void): void {
+    this.listener = listener;
+  }
 
   /** Listen for the whole session: down state and quietSince need it. */
   start(): void {
@@ -161,6 +171,11 @@ export class PenTracker {
   }
 
   private onMotion(event: MotionEvent | null | undefined): void {
+    if (this.listener) {
+      try {
+        this.listener(event);
+      } catch {}
+    }
     if (event?.toolType !== TOOL_PEN) {
       return;
     }
@@ -579,6 +594,9 @@ export function createHost(
 ): DeviceHost {
   // Elements read while handling the current stroke; freed in release().
   let fetched: Element[] = [];
+  // Strokes removed by the floating button's undo, newest last, for redo.
+  let undone: {path: string; page: number; layer: number; element: Element}[] =
+    [];
   // Strokes removed by the last margin-wave erase, kept in the native cache so
   // insertPageElements can put them back.
   let erased: ErasedStrokes | null = null;
@@ -913,6 +931,46 @@ export function createHost(
       }
     },
 
+    keepUndone(path, page, layer, element) {
+      const raw = rawElements.get(element);
+      if (!raw) {
+        return;
+      }
+      undone.push({path, page, layer, element: raw});
+      // A bounded history: the oldest is freed.
+      while (undone.length > MAX_UNDONE) {
+        recycleAll([undone.shift()!.element]);
+      }
+    },
+
+    async redo() {
+      const last = undone.pop();
+      if (!last) {
+        return 'Nothing to redo.';
+      }
+      if ((await this.getCurrentFilePath()) !== last.path) {
+        undone.push(last);
+        return 'Open the note the stroke was undone in, then try again.';
+      }
+      const ok = await call<boolean>('insertPageElements', () =>
+        PluginCommAPI.insertPageElements([last.element], last.page, last.layer),
+      );
+      if (ok !== true) {
+        undone.push(last);
+        fileCallFailed('insertPageElements');
+        return 'Could not redo the stroke.';
+      }
+      recycleAll([last.element]);
+      return 'Redone.';
+    },
+
+    clearRedo() {
+      if (undone.length > 0) {
+        recycleAll(undone.map(u => u.element));
+        undone = [];
+      }
+    },
+
     async reloadIfQuiet() {
       // Anything written since the last save would be lost by the reload.
       if (!pen.quietSince(savedAt)) {
@@ -1000,6 +1058,9 @@ export function createHost(
         for (const e of kept?.elements ?? []) {
           keep.add(e.uuid);
         }
+      }
+      for (const u of undone) {
+        keep.add(u.element.uuid);
       }
       recycleAll(old.filter(e => !keep.has(e.uuid)));
     },

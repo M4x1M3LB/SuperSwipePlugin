@@ -1,14 +1,19 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
 import {createHost, PenTracker, type DeviceHost} from './host';
+import {FloatingButton} from './floating';
 import {
   deleteSelection as deleteSelectionFlow,
   handlePenUp,
+  undoLastStroke,
   type Outcome,
 } from './selector';
 import {status} from './status';
 
 let host: DeviceHost | null = null;
+
+/** Outcomes need a rect; redo has none to show. */
+const NO_RECT = {left: 0, top: 0, right: 0, bottom: 0};
 
 /** Most strokes kept waiting while another is handled (the newest). */
 const MAX_WAITING = 20;
@@ -119,9 +124,63 @@ export function startGestures(): void {
       });
   };
 
+  // The floating undo/redo button: taps run one at a time, never while a
+  // stroke is being handled.
+  let tapping = false;
+  const floating = new FloatingButton(
+    () => status.gestures().undoButton ?? true,
+    count => {
+      if (count >= 3) {
+        floating.hideByUser();
+        return;
+      }
+      if (busy || tapping) {
+        return;
+      }
+      tapping = true;
+      const lines: string[] = [];
+      const trace = (line: string) => {
+        lines.push(line);
+      };
+      device.setTrace(trace);
+      const action: Promise<Outcome> =
+        count === 1
+          ? undoLastStroke(device, DEFAULT_CONFIG, {
+              trace,
+              screenRefresh: status.gestures().screenRefresh ?? true,
+            })
+          : device
+              .redo()
+              .then(
+                (message): Outcome =>
+                  message === 'Redone.'
+                    ? {kind: 'selected', count: 1, rect: NO_RECT}
+                    : {kind: 'ignored', reason: message},
+              );
+      action
+        .catch(
+          (e: unknown): Outcome => ({
+            kind: 'failed',
+            reason: e instanceof Error ? e.message : String(e),
+          }),
+        )
+        .then(outcome => {
+          trace(
+            count === 1 ? 'undo (floating button)' : 'redo (floating button)',
+          );
+          status.setLast(outcome, lines);
+          release([], trace);
+          tapping = false;
+        });
+    },
+  );
+  pen.onEvent(event => floating.onMotion(event));
+
   PluginManager.registerEventListener('event_pen_up', 1, {
     onMsg(msg: unknown) {
       status.countPenUp();
+      // New writing: what was undone can no longer be redone.
+      device.clearRedo();
       const gestures = status.gestures();
       if (
         !(

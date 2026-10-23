@@ -102,6 +102,17 @@ export interface Host {
   resetLasso(): Promise<string>;
   /** Show, hide or completely remove the lasso box; says how it went. */
   setLassoBox(state: 'show' | 'hide' | 'remove'): Promise<string>;
+  /** Keep a stroke removed by undo, so redo can put it back. */
+  keepUndone(
+    path: string,
+    page: number,
+    layer: number,
+    element: PageElement,
+  ): void;
+  /** Put the last undone stroke back. Returns a message. */
+  redo(): Promise<string>;
+  /** Forget the undone strokes (new writing makes redo meaningless). */
+  clearRedo(): void;
   /** How many times the pen has touched the screen so far. */
   penDownCount(): number;
   /** Ask the user which side of a line to select; null if unanswered. */
@@ -126,6 +137,8 @@ export interface Gestures {
   marginErase: boolean;
   lineSelect?: boolean;
   barSelect?: boolean;
+  /** The floating undo/redo button. */
+  undoButton?: boolean;
   /** Repaint the page after an erase (against ghosting). */
   screenRefresh?: boolean;
 }
@@ -1152,6 +1165,56 @@ export async function deleteSelection(
   await repaint(ctx!, clean);
   host.rememberErased(path, page, largest[0].layerNum, largest);
   return {kind: 'erased', count: targets.length};
+}
+
+/**
+ * The floating button's undo: remove the newest stroke on the page the way
+ * the margin wave erases (checked, then the screen refreshed), and keep it
+ * for redo.
+ */
+export async function undoLastStroke(
+  host: Host,
+  config: SelectorConfig,
+  options: {trace?: (line: string) => void; screenRefresh?: boolean} = {},
+): Promise<Outcome> {
+  const trace = options.trace ?? (() => {});
+  const [path, page] = await Promise.all([
+    host.getCurrentFilePath(),
+    host.getCurrentPageNum(),
+  ]);
+  if (!path || !/\.note$/i.test(path) || page === null) {
+    return {kind: 'ignored', reason: 'only NOTE files are supported'};
+  }
+  if (!(await host.ensureFileAccess())) {
+    return {kind: 'failed', reason: 'file access not granted'};
+  }
+  trace(`lasso reset: ${await host.resetLasso()}`);
+  const strokes = (await host.getPageElements(path, page)).filter(
+    e => e.type === STROKE,
+  );
+  if (strokes.length === 0) {
+    return {kind: 'ignored', reason: 'nothing to undo'};
+  }
+  const newest = strokes.reduce((a, b) => (b.numInPage > a.numInPage ? b : a));
+  trace(`undo: stroke #${newest.numInPage}, layer ${newest.layerNum}`);
+  const ctx: Context = {
+    host,
+    config,
+    path,
+    page,
+    stroke: newest,
+    others: [],
+    isCancelled: () => false,
+    trace,
+    screenRefresh: options.screenRefresh ?? true,
+  };
+  const removed = await deleteVerified(ctx, [newest]);
+  if (!removed.deleted) {
+    return {kind: 'failed', reason: 'could not undo the stroke'};
+  }
+  host.keepUndone(path, page, newest.layerNum, newest);
+  await repaint(ctx, removed.fileClean);
+  return {kind: 'erased', count: 1};
 }
 
 /**

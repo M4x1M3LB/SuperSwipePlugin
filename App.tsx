@@ -7,6 +7,7 @@
 import React, {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
+import {overlayAllowed, overlayAvailable, requestOverlay} from './src/floating';
 import {ensureFileAccess} from './src/host';
 import {restoreLastErase} from './src/plugin';
 import type {Gestures} from './src/selector';
@@ -42,6 +43,21 @@ function App(): React.JSX.Element {
     );
   };
 
+  const allowButton = async () => {
+    if (!overlayAvailable()) {
+      setMessage('This build has no floating button.');
+      return;
+    }
+    if (await overlayAllowed()) {
+      setMessage('The floating button is allowed.');
+      return;
+    }
+    await requestOverlay();
+    setMessage(
+      'Allow "Display over other apps" for the plugin, then come back.',
+    );
+  };
+
   const restore = async () => {
     setMessage(await restoreLastErase());
   };
@@ -63,7 +79,10 @@ function App(): React.JSX.Element {
         margin beside some lines selects that block. Delete a selection with the
         LasEr Delete button in the lasso toolbar. To erase a line of writing,
         draw a sideways wave with five bounces or more (∿∿∿, three waves) in the
-        margin next to it, left or right, leaving a small gap.
+        margin next to it, left or right, leaving a small gap. After each stroke
+        a floating button appears to its right: tap it once with a finger to
+        undo the last stroke, twice to redo, three times to hide it; a
+        four-finger tap anywhere shows or hides it.
       </Text>
 
       <Toggle label="Loop to select" name="loopSelect" />
@@ -71,6 +90,7 @@ function App(): React.JSX.Element {
       <Toggle label="Margin bar to select a block" name="barSelect" />
       <Toggle label="Margin wave to erase" name="marginErase" />
       <Toggle label="Refresh screen after an erase" name="screenRefresh" />
+      <Toggle label="Floating undo/redo button" name="undoButton" />
 
       <View style={styles.row}>
         <Pressable style={styles.button} onPress={restore}>
@@ -78,6 +98,9 @@ function App(): React.JSX.Element {
         </Pressable>
         <Pressable style={styles.button} onPress={requestAccess}>
           <Text style={styles.buttonText}>Grant file access</Text>
+        </Pressable>
+        <Pressable style={styles.button} onPress={allowButton}>
+          <Text style={styles.buttonText}>Allow floating button</Text>
         </Pressable>
       </View>
       {message && <Text style={styles.body}>{message}</Text>}

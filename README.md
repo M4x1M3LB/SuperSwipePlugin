@@ -146,6 +146,24 @@ LasEr Delete deletes the selection the way the wave erases (lasso closed,
 page saved and read, elements deleted and checked, screen refreshed), and
 **Restore last erase** can put them back.
 
+Floating undo/redo button:
+
+- After each stroke a small button appears just right of it, level with
+  its top. It disappears while the pen touches the screen and comes back
+  when the pen lifts.
+- Tap it with a **finger** (the pen writes through it into the note): once
+  to undo the last stroke, twice to redo, three times to hide it. A
+  **four-finger tap** anywhere shows or hides it again.
+- Undo removes the newest stroke on the page the way the margin wave
+  erases (checked, screen refreshed); redo puts it back. Up to 20 undone
+  strokes can be redone; new writing clears them. Like every LasEr edit,
+  it clears the device's own undo history for the page.
+- It is a system overlay window from LasEr's native module
+  (`android/app/src/main/java/com/superswipe/LaserOverlayModule.java`), the
+  technique SuperStickyNote uses. It needs Android's "Display over other
+  apps" permission: **Allow floating button** on the plugin screen opens
+  that setting. Switch: **Floating undo/redo button**.
+
 ## Limitations (Supernote SDK)
 
 - **Gestures clear the page's undo history.** The only SDK call that can
@@ -199,6 +217,10 @@ npm run typecheck
 npm run lint
 npm run build     # -> build/outputs/SuperSwipe.snplg
 ```
+
+The floating button is native Android code, built into the package by
+`buildPlugin.sh` (it finds `LaserOverlayPackage`). That needs the Android SDK
+(platform 35, build tools 35.0.0, `ANDROID_HOME`) and JDK 17 (`JAVA_HOME`).
 
 Layout:
 

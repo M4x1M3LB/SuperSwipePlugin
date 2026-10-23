@@ -11,6 +11,7 @@ let gestures: Gestures = {
   marginErase: true,
   lineSelect: true,
   barSelect: true,
+  undoButton: true,
   screenRefresh: true,
 };
 let lastOutcome: Outcome | null = null;

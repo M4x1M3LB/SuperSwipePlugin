@@ -2,6 +2,7 @@ import {DEFAULT_CONFIG} from '../src/config';
 import type {Box, Pt} from '../src/geometry';
 import {
   deleteSelection,
+  undoLastStroke,
   handlePenUp,
   outlinesOf,
   type Host,
@@ -73,6 +74,7 @@ interface FakeHost extends Host {
   lassoed: Box[];
   remembered: PageElement[][];
   lassoHeld: string[] | null;
+  undone: PageElement[];
   lassoBoxValue: Box | null;
   /** Calls in order: 'delete', 'reload', 'lasso', 'ask'. */
   calls: string[];
@@ -88,6 +90,7 @@ function fakeHost(
   const host: FakeHost = {
     deleted: [],
     lassoHeld: null,
+    undone: [],
     lassoBoxValue: null,
     lassoed: [],
     remembered: [],
@@ -128,6 +131,16 @@ function fakeHost(
       return true;
     },
     penDownCount: () => 0,
+    keepUndone: (_path, _page, _layer, element) => {
+      host.undone.push(element);
+    },
+    redo: async () => {
+      host.calls.push('redo');
+      return host.undone.pop() ? 'Redone.' : 'Nothing to redo.';
+    },
+    clearRedo: () => {
+      host.undone = [];
+    },
     lassoUuids: async () => host.lassoHeld,
     lassoBox: async () => host.lassoBoxValue,
     resetLasso: async () => 'ok',
@@ -1504,5 +1517,39 @@ describe('lasso reset before editing', () => {
     });
     expect(host.calls).toEqual(['reset', 'delete', 'lasso']);
     expect(lines).toContain('lasso reset: ok');
+  });
+});
+
+describe('undoLastStroke (floating button)', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  it('removes the newest stroke, checked and refreshed, and keeps it for redo', async () => {
+    const first = el(word(100, 100));
+    const last = el(word(100, 200));
+    const host = fakeHost([first, last]);
+
+    expect(await undoLastStroke(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 1,
+    });
+    expect(host.deleted).toEqual([[2]]);
+    expect(await host.getPageElements('', 3)).toEqual([first]);
+    expect(host.undone).toEqual([last]);
+    expect(host.calls).toEqual(['delete', 'reload']);
+  });
+
+  it('undoes one stroke per tap, newest first', async () => {
+    const a = el(word(100, 100));
+    const b = el(word(100, 200));
+    const host = fakeHost([a, b]);
+    await undoLastStroke(host, DEFAULT_CONFIG);
+    await undoLastStroke(host, DEFAULT_CONFIG);
+    expect(host.undone).toEqual([b, a]);
+    expect(await undoLastStroke(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'nothing to undo',
+    });
   });
 });
