@@ -18,8 +18,9 @@ class MainApplication : Application(), ReactApplication {
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
             PackageList(this).packages.apply {
-              // Packages that cannot be autolinked yet can be added manually here, for example:
-              // add(MyReactNativePackage())
+              // LasEr's floating undo/redo button (registered for the plugin host
+              // by buildPlugin.sh, which looks for packages added here).
+              add(LaserOverlayPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"
