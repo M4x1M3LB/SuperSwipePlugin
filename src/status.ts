@@ -23,7 +23,13 @@ const HISTORY_LENGTH = 8;
 const listeners = new Set<Listener>();
 
 function notify() {
-  listeners.forEach(l => l());
+  listeners.forEach(l => {
+    try {
+      l();
+    } catch {
+      // One failing screen must not stop the others, or the caller.
+    }
+  });
 }
 
 export const status = {
