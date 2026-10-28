@@ -127,8 +127,12 @@ Margin wave to erase:
 - Nothing is read from or saved to the note unless the stroke has the shape
   of a wave (checked on the stroke as delivered, either way round, with
   ratios only, so its scale and axes do not matter).
+- The erase is checked by reading the page back. Strokes still found are
+  deleted again only when a second read agrees, both saves went through
+  and the same page is still showing; otherwise they are left alone.
 - **Restore last erase** on the plugin screen puts the last erased line
-  back (same note; the plugin keeps it until the next erase).
+  back (same note; the plugin keeps it until the next erase, from the
+  moment it is deleted, and never strokes the check found still there).
 - Afterwards the screen is refreshed (switch on the plugin screen), so the
   erased strokes do not linger as ghosts: the note is reloaded, which
   repaints the page. Only once the saved file has been read back and no
@@ -145,7 +149,8 @@ every edit the plugin completely removes the lasso box, which does the
 same reset ("lasso reset: ok" in the trace): no phantom strokes since.
 LasEr Delete deletes the selection the way the wave erases (lasso closed,
 page saved and read, elements deleted and checked, screen refreshed), and
-**Restore last erase** can put them back.
+**Restore last erase** can put them back, on every layer the selection
+spanned.
 
 Floating undo/redo button:
 

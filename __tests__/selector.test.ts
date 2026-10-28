@@ -72,7 +72,9 @@ const flush = () => new Promise(r => setImmediate(r));
 interface FakeHost extends Host {
   deleted: number[][];
   lassoed: Box[];
+  /** The remembered erase: its strokes, one group per layer. */
   remembered: PageElement[][];
+  rememberedLayers: number[];
   lassoHeld: string[] | null;
   undone: PageElement[];
   lassoBoxValue: Box | null;
@@ -94,6 +96,7 @@ function fakeHost(
     lassoBoxValue: null,
     lassoed: [],
     remembered: [],
+    rememberedLayers: [],
     calls: [],
     getCurrentFilePath: async () => '/storage/emulated/0/Note/demo.note',
     getCurrentPageNum: async () => 3,
@@ -122,8 +125,20 @@ function fakeHost(
       host.calls.push('reload');
       return true;
     },
-    rememberErased: (_path, _page, _layer, elements) => {
-      host.remembered.push(elements);
+    rememberErased: (_path, _page, layer, elements, sameErase) => {
+      // As the device host: a new erase replaces the last one; the same
+      // erase gets this layer's strokes (replacing what it had for it).
+      const others = sameErase ? host.remembered : [];
+      host.remembered = others.filter(
+        (_, i) => host.rememberedLayers[i] !== layer,
+      );
+      host.rememberedLayers = (sameErase ? host.rememberedLayers : []).filter(
+        l => l !== layer,
+      );
+      if (elements.length > 0) {
+        host.remembered.push(elements);
+        host.rememberedLayers.push(layer);
+      }
     },
     lassoRect: async rect => {
       host.calls.push('lasso');
@@ -133,6 +148,9 @@ function fakeHost(
     penDownCount: () => 0,
     keepUndone: (_path, _page, _layer, element) => {
       host.undone.push(element);
+    },
+    forgetUndone: element => {
+      host.undone = host.undone.filter(e => e !== element);
     },
     redo: async () => {
       host.calls.push('redo');
@@ -1411,7 +1429,7 @@ describe('handlePenUp: fewer and parallel device calls', () => {
     expect(host.calls).toEqual(['delete', 'delete']); // found and retried
   });
 
-  it('remembers the erased strokes after the screen is refreshed', async () => {
+  it('remembers the erased strokes right after the delete, before the refresh', async () => {
     const letters = [100, 140, 180, 220].map(x => el(letter(x, 500)));
     const mark = el(
       Array.from({length: 61}, (_, i) => ({
@@ -1425,7 +1443,167 @@ describe('handlePenUp: fewer and parallel device calls', () => {
     };
 
     await handlePenUp([mark], host, DEFAULT_CONFIG);
-    expect(host.calls).toEqual(['delete', 'reload', 'remember']);
+    expect(host.calls).toEqual(['delete', 'remember', 'reload']);
+  });
+});
+
+describe('handlePenUp: checked erase (second delete)', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  const letters = () => [100, 140, 180, 220].map(x => el(letter(x, 500)));
+  const waveMark = () =>
+    el(
+      Array.from({length: 61}, (_, i) => ({
+        x: 10 + i,
+        y: 520 - 12 * Math.sin((5 * Math.PI * i) / 60),
+      })),
+    );
+
+  /** The device "forgets" the deletion: the file keeps the strokes. */
+  function phantom(host: FakeHost): void {
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      return true;
+    };
+  }
+
+  it('deletes again only when a second read agrees with the first', async () => {
+    const row = letters();
+    const mark = waveMark();
+    const after = el(word(100, 900)); // shifts down once the row is gone
+    const host = fakeHost([...row, mark, after]);
+    const realRead = host.getPageElements;
+    const realDelete = host.deleteElements;
+    let reads = 0;
+    // The first check reads the file before the save finished: the old
+    // page, numbers and all. The next read is right.
+    const stale = [...row, mark, after].map(e => ({...e}));
+    host.getPageElements = async (path, page) =>
+      ++reads === 2 ? stale : realRead(path, page);
+    host.deleteElements = realDelete;
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 4});
+    expect(host.deleted).toEqual([[5, 4, 3, 2, 1]]); // no second delete
+    expect(await host.getPageElements('', 3)).toEqual([after]);
+    expect(lines).toContain('not deleted again: the two reads differ');
+    expect(host.calls).not.toContain('reload');
+    expect(host.remembered).toEqual([row]);
+  });
+
+  it('does not delete again when the save before the check failed', async () => {
+    const host = fakeHost([...letters(), waveMark()]);
+    phantom(host);
+    host.lastSaveFailed = () => true;
+    const lines: string[] = [];
+    const mark = (await host.getPageElements('', 3)).slice(-1)[0];
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      trace: l => lines.push(l),
+    });
+    expect(host.calls).toEqual(['delete']);
+    expect(lines).toContain(
+      'not deleted again: the save before the check failed',
+    );
+  });
+
+  it('does not delete again once the note or page changed', async () => {
+    const host = fakeHost([...letters(), waveMark()]);
+    phantom(host);
+    const mark = (await host.getPageElements('', 3)).slice(-1)[0];
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      host.getCurrentFilePath = async () => '/storage/other.note';
+      return true;
+    };
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete']);
+  });
+
+  it('does not delete again or reload once the caller gave up', async () => {
+    const host = fakeHost([...letters(), waveMark()]);
+    phantom(host);
+    const mark = (await host.getPageElements('', 3)).slice(-1)[0];
+    let gaveUp = false;
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      gaveUp = true; // abandoned while the first delete ran
+      return true;
+    };
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      isCancelled: () => gaveUp,
+    });
+    expect(host.calls).toEqual(['delete']);
+
+    // A clean erase is not followed by a reload either.
+    nextNum = 1;
+    const host2 = fakeHost([...letters(), waveMark()]);
+    const mark2 = (await host2.getPageElements('', 3)).slice(-1)[0];
+    let gaveUp2 = false;
+    const realDelete = host2.deleteElements;
+    host2.deleteElements = async (nums, page, layer) => {
+      gaveUp2 = true;
+      return realDelete(nums, page, layer);
+    };
+    const lines: string[] = [];
+    await handlePenUp([mark2], host2, DEFAULT_CONFIG, {
+      isCancelled: () => gaveUp2,
+      trace: l => lines.push(l),
+    });
+    expect(host2.calls).toEqual(['delete']);
+    expect(lines).toContain('not refreshed: given up on');
+  });
+
+  it('keeps the erased strokes restorable when the check throws', async () => {
+    const row = letters();
+    const mark = waveMark();
+    const host = fakeHost([...row, mark]);
+    const realRead = host.getPageElements;
+    let reads = 0;
+    host.getPageElements = async (path, page) => {
+      if (++reads === 2) {
+        throw new Error('native');
+      }
+      return realRead(path, page);
+    };
+
+    await expect(handlePenUp([mark], host, DEFAULT_CONFIG)).rejects.toThrow(
+      'native',
+    );
+    expect(host.remembered).toEqual([row]);
+  });
+
+  it('never keeps for restore what is still on the page', async () => {
+    const row = letters();
+    const mark = waveMark();
+    const host = fakeHost([...row, mark]);
+    let deletes = 0;
+    // The device keeps the strokes, then refuses to delete them again.
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      return ++deletes === 1;
+    };
+    const lines: string[] = [];
+
+    expect(
+      await handlePenUp([mark], host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 4});
+    expect(lines).toContain('not deleted again: the delete failed');
+    expect(host.remembered).toEqual([]);
   });
 });
 
@@ -1489,6 +1667,36 @@ describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
     expect(await host.getPageElements('', 3)).toEqual([keep]);
     expect(host.remembered).toEqual([[a, b]]);
     expect(lines).toContain('found on the page by id: 2');
+  });
+
+  it('keeps every layer of the selection for restore', async () => {
+    const a = el(word(480, 500));
+    const b = el(word(600, 500), {layerNum: 1});
+    const c = el(word(480, 560));
+    const host = fakeHost([a, b, c]);
+    host.lassoHeld = [a.uuid, b.uuid, c.uuid];
+
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 3,
+    });
+    expect(host.remembered).toEqual([[a, c], [b]]);
+    expect(host.rememberedLayers).toEqual([0, 1]);
+  });
+
+  it('keeps the layers already deleted when a later layer fails', async () => {
+    const a = el(word(480, 500));
+    const b = el(word(600, 500), {layerNum: 1});
+    const host = fakeHost([a, b]);
+    host.lassoHeld = [a.uuid, b.uuid];
+    const realDelete = host.deleteElements;
+    host.deleteElements = async (nums, page, layer) =>
+      layer === 1 ? false : realDelete(nums, page, layer);
+
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'failed',
+    });
+    expect(host.remembered).toEqual([[a]]);
   });
 
   it('falls back to the lasso box when the ids differ', async () => {
@@ -1555,6 +1763,41 @@ describe('undoLastStroke (floating button)', () => {
     expect(await host.getPageElements('', 3)).toEqual([first]);
     expect(host.undone).toEqual([last]);
     expect(host.calls).toEqual(['delete', 'reload']);
+  });
+
+  it('keeps the stroke for redo as soon as it is deleted', async () => {
+    const first = el(word(100, 100));
+    const last = el(word(100, 200));
+    const host = fakeHost([first, last]);
+    const realRead = host.getPageElements;
+    let reads = 0;
+    host.getPageElements = async (path, page) => {
+      if (++reads === 2) {
+        throw new Error('native'); // the check after the delete
+      }
+      return realRead(path, page);
+    };
+
+    await expect(undoLastStroke(host, DEFAULT_CONFIG)).rejects.toThrow(
+      'native',
+    );
+    expect(host.undone).toEqual([last]);
+  });
+
+  it('does not keep for redo a stroke still on the page', async () => {
+    const last = el(word(100, 200));
+    const host = fakeHost([el(word(100, 100)), last]);
+    host.deleteElements = async nums => {
+      host.deleted.push(nums);
+      return true; // the device keeps the stroke, every time
+    };
+
+    expect(await undoLastStroke(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 1,
+    });
+    expect(host.deleted).toEqual([[2], [2]]);
+    expect(host.undone).toEqual([]);
   });
 
   it('undoes one stroke per tap, newest first', async () => {

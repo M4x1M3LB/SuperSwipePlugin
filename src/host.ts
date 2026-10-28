@@ -580,9 +580,12 @@ export async function ensureFileAccess(): Promise<boolean> {
 interface ErasedStrokes {
   path: string;
   page: number;
-  layer: number;
-  elements: Element[];
+  /** One erase can span layers: deletePageElements works per layer. */
+  groups: {layer: number; elements: Element[]}[];
 }
+
+const elementsOf = (erase: ErasedStrokes | null): Element[] =>
+  erase ? erase.groups.flatMap(g => g.elements) : [];
 
 export interface DeviceHost extends Host {
   /**
@@ -598,6 +601,7 @@ export interface DeviceHost extends Host {
   timeLine(totalMs: number): string;
   /** Did handling the stroke read the page (save and getElements)? */
   pageWasRead(): boolean;
+  lastSaveFailed(): boolean;
 }
 
 const STROKE = 0;
@@ -630,6 +634,8 @@ export function createHost(
   let tracedFallback = false;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
+  // Whether that save failed (the file read after it may be old).
+  let saveFailed = false;
   // Both file permissions were "always allow" at the last check: no need to
   // ask again until a file call fails.
   let fileAccessOk = false;
@@ -856,6 +862,7 @@ export function createHost(
       const saved = await request('saveCurrentNote', () =>
         PluginNoteAPI.saveCurrentNote(),
       );
+      saveFailed = !saved.ok;
       if (!saved.ok) {
         fileCallFailed('saveCurrentNote');
       }
@@ -885,6 +892,10 @@ export function createHost(
       }
     },
 
+    lastSaveFailed() {
+      return saveFailed;
+    },
+
     waitForPenUp(maxWaitMs) {
       return pen.waitForUp(maxWaitMs);
     },
@@ -899,15 +910,26 @@ export function createHost(
       return ok === true;
     },
 
-    rememberErased(path, page, layer, elements) {
-      const previous = erased;
+    rememberErased(path, page, layer, elements, sameErase = false) {
       const raw = elements
         .map(e => rawElements.get(e))
         .filter((e): e is Element => e !== undefined);
-      erased = {path, page, layer, elements: raw};
+      if (sameErase && erased?.path === path && erased.page === page) {
+        // Another layer of this erase, or fewer strokes for one of its
+        // layers. Strokes dropped here were read while handling this
+        // erase: release() frees them.
+        const groups = erased.groups.filter(g => g.layer !== layer);
+        if (raw.length > 0) {
+          groups.push({layer, elements: raw});
+        }
+        erased = groups.length > 0 ? {path, page, groups} : null;
+        return;
+      }
+      const previous = erased;
+      erased = {path, page, groups: [{layer, elements: raw}]};
       if (previous) {
         const keep = new Set(raw.map(e => e.uuid));
-        recycleAll(previous.elements.filter(e => !keep.has(e.uuid)));
+        recycleAll(elementsOf(previous).filter(e => !keep.has(e.uuid)));
       }
     },
 
@@ -924,7 +946,7 @@ export function createHost(
         if (erased === null) {
           erased = target;
         } else {
-          recycleAll(target.elements); // a newer erase replaced it
+          recycleAll(elementsOf(target)); // a newer erase replaced it
         }
       };
       let done = false;
@@ -932,22 +954,42 @@ export function createHost(
         if ((await this.getCurrentFilePath()) !== target.path) {
           return 'Open the note the strokes were erased from, then try again.';
         }
-        const {page, layer, elements} = target;
-        const ok = await call<boolean>('insertPageElements', () =>
-          PluginCommAPI.insertPageElements(elements, page, layer),
-        );
-        if (ok !== true) {
-          fileCallFailed('insertPageElements');
-          return 'Could not restore the erased strokes.';
+        const page = target.page;
+        let restored = 0;
+        // Layer by layer; a layer put back leaves the erase, so a retry
+        // after a failure never inserts it twice.
+        while (target.groups.length > 0) {
+          const {layer, elements} = target.groups[0];
+          const ok = await call<boolean>('insertPageElements', () =>
+            PluginCommAPI.insertPageElements(elements, page, layer),
+          );
+          if (ok !== true) {
+            fileCallFailed('insertPageElements');
+            return restored > 0
+              ? `Restored ${restored} strokes; could not restore the others.`
+              : 'Could not restore the erased strokes.';
+          }
+          target.groups = target.groups.slice(1);
+          restored += elements.length;
+          recycleAll(elements);
         }
         done = true;
         restoring = null;
-        recycleAll(elements);
-        return `Restored ${elements.length} strokes on page ${page + 1}.`;
+        return `Restored ${restored} strokes on page ${page + 1}.`;
       } finally {
         if (!done) {
           putBack(); // also on a throw: the strokes stay restorable
         }
+      }
+    },
+
+    forgetUndone(element) {
+      // Still on the page after all. Read while handling this undo:
+      // release() frees it.
+      const raw = rawElements.get(element);
+      const i = undone.findIndex(u => u.element === raw);
+      if (i >= 0) {
+        undone.splice(i, 1);
       }
     },
 
@@ -1087,10 +1129,8 @@ export function createHost(
       const old = fetched;
       fetched = [];
       const keep = new Set<string>(pendingUuids);
-      for (const kept of [erased, restoring]) {
-        for (const e of kept?.elements ?? []) {
-          keep.add(e.uuid);
-        }
+      for (const e of [...elementsOf(erased), ...elementsOf(restoring)]) {
+        keep.add(e.uuid);
       }
       for (const u of undone) {
         keep.add(u.element.uuid);
