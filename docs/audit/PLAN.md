@@ -66,6 +66,7 @@ Rejected / deferred, with reason:
       erase put under the edit lock (pre-existing gap). Page size cache
       reverted (stale after page insert/orientation change).
 - [x] Full gates: 206 tests, typecheck, lint. README updated.
-- [ ] On device (cannot be done here): build with `npm run build` (needs
-      Android SDK 35 + JDK 17), check the floating button (tap, palm,
-      JS reload), then bump `versionCode`/version for a release.
+- [x] Release built: `release/LasEr-0.0.40.snplg` (versionCode 40; JDK 17,
+      SDK 35; native module compiled against the real React Native).
+- [ ] On device: install 0.0.40, check the gestures and the floating
+      button (tap, palm, JS reload).

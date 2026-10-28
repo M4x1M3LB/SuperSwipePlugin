@@ -205,7 +205,7 @@ Floating undo/redo button:
 
 ## Using it
 
-1. Copy `release/LasEr-0.0.39.snplg` (ready to install, or your own
+1. Copy `release/LasEr-0.0.40.snplg` (ready to install, or your own
    build from `build/outputs/SuperSwipe.snplg`) to the `MyStyle` folder on
    the device.
 2. Settings → Apps → Plugins → Add Plugin, select the file.
