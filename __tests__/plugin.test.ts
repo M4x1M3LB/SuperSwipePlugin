@@ -1,3 +1,4 @@
+let mockTap: (count: number) => void = () => {};
 const listeners: {onMsg(msg: unknown): void}[] = [];
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -25,10 +26,31 @@ jest.mock('../src/host', () => ({
     timeLine: () => 'time: test',
     pageWasRead: () => false,
     clearRedo: () => {},
+    redo: () =>
+      new Promise(resolve => {
+        edits.push({name: 'redo', finish: () => resolve('Redone.')});
+      }),
   }),
 }));
+jest.mock('../src/floating', () => ({
+  FloatingButton: class {
+    constructor(_enabled: unknown, onTaps: (count: number) => void) {
+      mockTap = onTaps;
+    }
+    onMotion() {}
+    hideByUser() {}
+  },
+}));
+const edits: {name: string; finish: () => void}[] = [];
 const calls: {elements: unknown[]; finish: () => void}[] = [];
 jest.mock('../src/selector', () => ({
+  deleteSelection: () =>
+    new Promise(resolve => {
+      edits.push({
+        name: 'delete',
+        finish: () => resolve({kind: 'erased', count: 1, rect: {}}),
+      });
+    }),
   handlePenUp: (elements: unknown[]) =>
     new Promise(resolve => {
       mockLog.push(
@@ -43,7 +65,7 @@ jest.mock('../src/selector', () => ({
     }),
 }));
 
-import {startGestures} from '../src/plugin';
+import {deleteSelection, startGestures} from '../src/plugin';
 import {status} from '../src/status';
 
 const flush = () => new Promise(r => setImmediate(r));
@@ -51,6 +73,7 @@ const flush = () => new Promise(r => setImmediate(r));
 describe('pen-up events', () => {
   beforeEach(() => {
     calls.length = 0;
+    edits.length = 0;
     mockLog.length = 0;
     mockRelease.mockClear();
   });
@@ -133,6 +156,130 @@ describe('pen-up events', () => {
     calls[0].finish(); // the abandoned one settles, nothing else is busy
     await flush();
     expect(mockRelease).toHaveBeenCalledTimes(1);
+    now.mockRestore();
+  });
+
+  it('frees what an abandoned stroke that never settles was holding back, once it is old', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    listener.onMsg([{uuid: 'hung'}]);
+    now.mockReturnValue(20000); // abandoned, and never settles
+    listener.onMsg([{uuid: 'next'}]);
+    now.mockReturnValue(20000 + 3 * 8000 + 1); // long past 3 time limits
+    listener.onMsg([{uuid: 'late'}]); // abandons 'next' too
+    calls[2].finish();
+    await flush();
+    // 'next' was abandoned just now and may still read, 'hung' is stale.
+    expect(mockRelease).not.toHaveBeenCalled();
+    now.mockReturnValue(20000 + 3 * 8000 + 1 + 3 * 8000 + 1);
+    listener.onMsg([{uuid: 'last'}]);
+    calls[3].finish();
+    await flush();
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+    now.mockRestore();
+  });
+
+  it('keeps handling strokes when a status listener throws', async () => {
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+    const off = status.subscribe(() => {
+      throw new Error('torn down');
+    });
+
+    listener.onMsg(['gesture']);
+    listener.onMsg(['queued']);
+    calls[0].finish();
+    await flush();
+    expect(calls.map(c => c.elements)).toEqual([['gesture'], ['queued']]);
+    expect(status.lastOutcome()).toEqual({kind: 'ignored', reason: 'test'});
+    off();
+  });
+});
+
+describe('the edit lock', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    edits.length = 0;
+    mockLog.length = 0;
+    mockRelease.mockClear();
+  });
+
+  it('queues a stroke arriving during an undo/redo, handling it when that ends', async () => {
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    mockTap(2); // redo
+    listener.onMsg([{uuid: 'a'}]);
+    expect(calls).toHaveLength(0);
+
+    edits[0].finish();
+    await flush();
+    expect(mockLog).toEqual(['release a', 'handle a']);
+    calls[0].finish();
+    await flush();
+  });
+
+  it('refuses a tap while a stroke is handled', async () => {
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    listener.onMsg(['gesture']);
+    mockTap(2);
+    expect(edits).toHaveLength(0);
+    expect(status.lastOutcome()).toEqual({
+      kind: 'ignored',
+      reason: 'redo skipped: a stroke is being handled',
+    });
+    calls[0].finish();
+    await flush();
+  });
+
+  it('refuses Delete while a stroke is handled, and queues strokes while it runs', async () => {
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    listener.onMsg(['gesture']);
+    await deleteSelection();
+    expect(edits).toHaveLength(0);
+    expect(status.lastOutcome()).toEqual({
+      kind: 'ignored',
+      reason: 'a stroke is being handled',
+    });
+    calls[0].finish();
+    await flush();
+
+    const running = deleteSelection();
+    await flush();
+    listener.onMsg([{uuid: 'q'}]);
+    expect(calls).toHaveLength(1);
+    await deleteSelection(); // a second Delete is refused
+    expect(status.lastOutcome()).toEqual({
+      kind: 'ignored',
+      reason: 'the last undo/redo is running',
+    });
+    edits[0].finish();
+    await running;
+    await flush();
+    // Delete releases what it read, then the waiting stroke is handled.
+    expect(mockLog.slice(-2)).toEqual(['release q', 'handle q']);
+    calls[1].finish();
+    await flush();
+  });
+
+  it('lets a stroke through when Delete never finishes', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    deleteSelection().catch(() => {});
+    await flush();
+    now.mockReturnValue(20000);
+    listener.onMsg(['gesture']);
+    expect(calls.map(c => c.elements)).toEqual([['gesture']]);
+    calls[0].finish();
+    await flush();
     now.mockRestore();
   });
 });
