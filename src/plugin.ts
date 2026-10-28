@@ -1,6 +1,6 @@
 import {PluginManager, type Element} from 'sn-plugin-lib';
 import {DEFAULT_CONFIG} from './config';
-import {createHost, PenTracker, type DeviceHost} from './host';
+import {createHost, PenTracker} from './host';
 import {FloatingButton} from './floating';
 import {
   deleteSelection as deleteSelectionFlow,
@@ -10,15 +10,24 @@ import {
 } from './selector';
 import {status} from './status';
 
-let host: DeviceHost | null = null;
 /** The toolbar Delete, once gestures have started (it shares their lock). */
 let runDelete: (() => Promise<void>) | null = null;
+/** Restore last erase, once gestures have started (it shares their lock). */
+let runRestore: (() => Promise<string>) | null = null;
 
 /** Outcomes need a rect; redo has none to show. */
 const NO_RECT = {left: 0, top: 0, right: 0, bottom: 0};
 
 /** Most strokes kept waiting while another is handled (the newest). */
 const MAX_WAITING = 20;
+
+/** An undo/redo or LasEr Delete running, holding the edit lock. */
+interface Tap {
+  id: number;
+  what: string;
+  since: number;
+  lines: string[];
+}
 
 /** An abandoned stroke this many time limits old counts as settled. */
 const STALE_FACTOR = 3;
@@ -28,7 +37,6 @@ export function startGestures(): void {
   const pen = new PenTracker();
   pen.start();
   const device = createHost(pen);
-  host = device;
 
   // The stroke being handled, if any. Timers cannot be trusted (the host may
   // pause them once the plugin view has been shown), so a stroke that is
@@ -58,7 +66,21 @@ export function startGestures(): void {
   // The undo/redo or LasEr Delete running, if any: what it is, when it
   // started and what it traced. With `busy` it is the one edit lock: a
   // stroke arriving meanwhile waits, and these refuse while a stroke runs.
-  let tapping: {what: string; since: number; lines: string[]} | null = null;
+  let tapping: Tap | null = null;
+
+  /**
+   * The running undo/redo or Delete is stuck: report where it stopped and
+   * let go of it. It counts as abandoned (cancelled, and what it read is
+   * not freed until it settles), like a stroke.
+   */
+  const takeOverTap = (stuck: Tap) => {
+    status.setLast(
+      {kind: 'failed', reason: `the last ${stuck.what} never finished`},
+      [...stuck.lines, 'never finished'],
+    );
+    abandoned.set(stuck.id, Date.now());
+    tapping = null;
+  };
 
   /** Free what was read so far; never lets a failure stop the queue. */
   const release = (pending: Element[], trace: (line: string) => void) => {
@@ -75,6 +97,9 @@ export function startGestures(): void {
 
   /** An edit finished: free what was read, then handle the waiting strokes. */
   const handOver = (trace: (line: string) => void) => {
+    if (busy || tapping) {
+      return; // that one hands over when it is done
+    }
     const next = waiting;
     waiting = [];
     // Before the next stroke wraps its elements, so they are not freed.
@@ -166,7 +191,7 @@ export function startGestures(): void {
   const begin = (
     what: string,
     reasonOf: (why: string) => string,
-  ): {what: string; since: number; lines: string[]} | null => {
+  ): Tap | null => {
     const skip = (why: string, line: string) => {
       status.setLast({kind: 'ignored', reason: reasonOf(why)}, [
         `${what} skipped: ${line}`,
@@ -174,19 +199,20 @@ export function startGestures(): void {
       return null;
     };
     if (busy) {
-      return skip('a stroke is being handled', 'busy');
+      if (Date.now() - busy.since < DEFAULT_CONFIG.timeoutMs) {
+        return skip('a stroke is being handled', 'busy');
+      }
+      // Stuck (with the gestures off, no pen-up would ever abandon it).
+      busy.abandon();
+      busy = null;
     }
     if (tapping) {
       if (Date.now() - tapping.since < DEFAULT_CONFIG.timeoutMs) {
         return skip('the last undo/redo is running', 'still running');
       }
-      // Stuck: report where it stopped, then let this one run.
-      status.setLast(
-        {kind: 'failed', reason: `the last ${tapping.what} never finished`},
-        [...tapping.lines, 'never finished'],
-      );
+      takeOverTap(tapping);
     }
-    const current = {what, since: Date.now(), lines: [what]};
+    const current: Tap = {id: nextId++, what, since: Date.now(), lines: [what]};
     tapping = current;
     device.setTrace(line => {
       current.lines.push(line);
@@ -194,17 +220,27 @@ export function startGestures(): void {
     return current;
   };
 
-  /** Report an undo/redo or Delete, unless it was superseded as stuck. */
-  const end = (current: {since: number; lines: string[]}, outcome: Outcome) => {
+  /**
+   * Report an undo/redo or Delete (`null`: nothing to report), unless it was
+   * superseded as stuck.
+   */
+  const end = (current: Tap, outcome: Outcome | null) => {
     if (tapping !== current) {
-      return; // reported as stuck, and a newer one took over
+      // Reported as stuck and let go of: now it has settled.
+      abandoned.delete(current.id);
+      if (settled() && !busy && !tapping) {
+        release(waiting, () => {});
+      }
+      return;
     }
     const trace = (line: string) => {
       current.lines.push(line);
     };
     try {
       trace(`took ${Date.now() - current.since} ms`);
-      status.setLast(outcome, current.lines);
+      if (outcome) {
+        status.setLast(outcome, current.lines);
+      }
     } finally {
       tapping = null;
       handOver(trace);
@@ -280,9 +316,12 @@ export function startGestures(): void {
       }
       const incoming = [...waiting, ...(msg as Element[])].slice(-MAX_WAITING);
       waiting = [];
-      if (tapping && Date.now() - tapping.since < DEFAULT_CONFIG.timeoutMs) {
-        waiting = incoming; // handled when the undo/redo or Delete is done
-        return;
+      if (tapping) {
+        if (Date.now() - tapping.since < DEFAULT_CONFIG.timeoutMs) {
+          waiting = incoming; // handled when the undo/redo or Delete is done
+          return;
+        }
+        takeOverTap(tapping);
       }
       if (busy) {
         if (Date.now() - busy.since < DEFAULT_CONFIG.timeoutMs) {
@@ -319,6 +358,25 @@ export function startGestures(): void {
     }
     end(current, outcome);
   };
+
+  runRestore = async () => {
+    // Inserting while a stroke deletes by element number would shift the
+    // numbers under it: never at the same time as another edit.
+    const current = begin('restore', why => why);
+    if (!current) {
+      return 'Busy with another edit: try again in a moment.';
+    }
+    let message: string;
+    try {
+      message = await device.restoreLastErase();
+    } catch (e) {
+      message = `Could not restore: ${
+        e instanceof Error ? e.message : String(e)
+      }`;
+    }
+    end(current, null);
+    return message;
+  };
 }
 
 /** The lasso toolbar's LasEr Delete button. */
@@ -328,8 +386,5 @@ export async function deleteSelection(): Promise<void> {
 
 /** Put back the strokes removed by the last margin-wave erase. */
 export async function restoreLastErase(): Promise<string> {
-  if (!host) {
-    return 'Nothing to restore.';
-  }
-  return host.restoreLastErase();
+  return runRestore ? runRestore() : 'Nothing to restore.';
 }

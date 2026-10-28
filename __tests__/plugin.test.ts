@@ -30,6 +30,10 @@ jest.mock('../src/host', () => ({
       new Promise(resolve => {
         edits.push({name: 'redo', finish: () => resolve('Redone.')});
       }),
+    restoreLastErase: () =>
+      new Promise(resolve => {
+        edits.push({name: 'restore', finish: () => resolve('Restored 2.')});
+      }),
   }),
 }));
 jest.mock('../src/floating', () => ({
@@ -65,7 +69,11 @@ jest.mock('../src/selector', () => ({
     }),
 }));
 
-import {deleteSelection, startGestures} from '../src/plugin';
+import {
+  deleteSelection,
+  restoreLastErase,
+  startGestures,
+} from '../src/plugin';
 import {status} from '../src/status';
 
 const flush = () => new Promise(r => setImmediate(r));
@@ -281,5 +289,66 @@ describe('the edit lock', () => {
     calls[0].finish();
     await flush();
     now.mockRestore();
+  });
+
+  it('frees nothing when a Delete taken over as stuck ends during a stroke', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    const stuck = deleteSelection();
+    await flush();
+    now.mockReturnValue(20000);
+    listener.onMsg(['gesture']); // takes over the stuck Delete
+    expect(calls).toHaveLength(1);
+    mockRelease.mockClear();
+
+    edits[0].finish(); // the stuck Delete ends while the stroke runs
+    await stuck;
+    await flush();
+    expect(mockRelease).not.toHaveBeenCalled();
+
+    calls[0].finish();
+    await flush();
+    expect(mockRelease).toHaveBeenCalled();
+    now.mockRestore();
+  });
+
+  it('lets an undo/redo through when a stroke is stuck', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    listener.onMsg(['gesture']);
+    now.mockReturnValue(20000);
+    mockTap(2); // redo: the stroke is abandoned, the redo runs
+    expect(edits.map(e => e.name)).toEqual(['redo']);
+    edits[0].finish();
+    await flush();
+    calls[0].finish();
+    await flush();
+    now.mockRestore();
+  });
+
+  it('runs Restore under the lock: refused during a stroke, strokes wait for it', async () => {
+    startGestures();
+    const listener = listeners[listeners.length - 1];
+
+    listener.onMsg(['gesture']);
+    expect(await restoreLastErase()).toBe(
+      'Busy with another edit: try again in a moment.',
+    );
+    calls[0].finish();
+    await flush();
+
+    const running = restoreLastErase();
+    listener.onMsg([{uuid: 'r'}]);
+    expect(calls).toHaveLength(1); // waits for the restore
+    edits[edits.length - 1].finish();
+    expect(await running).toBe('Restored 2.');
+    await flush();
+    expect(mockLog.slice(-1)).toEqual(['handle r']);
+    calls[1].finish();
+    await flush();
   });
 });

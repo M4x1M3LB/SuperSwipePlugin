@@ -1515,6 +1515,39 @@ describe('handlePenUp: checked erase (second delete)', () => {
     );
   });
 
+  it('keeps strokes still on the page out of Restore when only the second save fails', async () => {
+    const host = fakeHost([...letters(), waveMark()]);
+    phantom(host);
+    let saves = 0;
+    host.lastSaveFailed = () => ++saves === 2;
+    const mark = (await host.getPageElements('', 3)).slice(-1)[0];
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG);
+    expect(host.calls).toEqual(['delete']);
+    // The first read showed every stroke still there: none is restorable.
+    expect(host.remembered).toEqual([]);
+  });
+
+  it('leaves Restore alone once given up on (a newer erase may own it)', async () => {
+    const host = fakeHost([...letters(), waveMark()]);
+    phantom(host);
+    let cancelled = false;
+    host.deleteElements = async nums => {
+      host.calls.push('delete');
+      host.deleted.push(nums);
+      cancelled = true; // abandoned while the delete ran
+      return true;
+    };
+    const mark = (await host.getPageElements('', 3)).slice(-1)[0];
+
+    await handlePenUp([mark], host, DEFAULT_CONFIG, {
+      isCancelled: () => cancelled,
+    });
+    expect(host.calls).toEqual(['delete']);
+    // Remembered once, right after the delete; not changed afterwards.
+    expect(host.remembered).toEqual([letters().map(() => expect.anything())]);
+  });
+
   it('does not delete again once the note or page changed', async () => {
     const host = fakeHost([...letters(), waveMark()]);
     phantom(host);

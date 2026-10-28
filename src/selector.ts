@@ -1015,7 +1015,7 @@ async function eraseNextToMark(
     return {kind: 'ignored', reason: 'kept writing after the wave'};
   }
   // Remembered as soon as deleted (the wave itself is not restored).
-  const remember = eraseMemory(host, path, page);
+  const remember = eraseMemory(host, path, page, ctx.isCancelled);
   const removed = await deleteVerified(ctx, [...erased, stroke], gone =>
     remember(
       stroke.layerNum,
@@ -1031,15 +1031,20 @@ async function eraseNextToMark(
 
 /**
  * One erase, remembered for Restore layer by layer as it is deleted: the
- * first call starts it, later ones add or replace a layer's strokes.
+ * first call starts it, later ones add or replace a layer's strokes. Once
+ * given up on, a newer erase may own the memory: later calls are dropped.
  */
 function eraseMemory(
   host: Host,
   path: string,
   page: number,
+  isCancelled: () => boolean,
 ): (layer: number, gone: PageElement[]) => void {
   let started = false;
   return (layer, gone) => {
+    if (started && isCancelled()) {
+      return;
+    }
     host.rememberErased(path, page, layer, gone, started);
     started = true;
   };
@@ -1148,6 +1153,7 @@ async function deleteVerified(
   ctx.trace(`still on page after delete: ${first.left.length}, reading again`);
   const second = await stillThere();
   if (!second.saved) {
+    settle(first);
     return unverified('the save before the check failed');
   }
   if (second.keys !== first.keys) {
@@ -1306,7 +1312,7 @@ export async function deleteSelection(
   let ctx: Context | null = null;
   // Every layer's strokes, remembered as each is deleted: Restore puts
   // all of them back.
-  const remember = eraseMemory(host, path, page);
+  const remember = eraseMemory(host, path, page, isCancelled);
   for (const group of layers.values()) {
     ctx = contextFor(group);
     const removed = await deleteVerified(ctx, group, gone =>

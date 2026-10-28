@@ -57,5 +57,15 @@ Rejected / deferred, with reason:
 
 ## Phase 4 — verification
 
-- [ ] Full gates, adversarial review of the whole diff, README updated,
-      version bump decision noted (no device build in this container).
+- [x] Cross-batch review (opus): 5 seam issues found and fixed in
+      "Fix seams between batches": stuck undo/Delete taken over is now
+      abandoned (cancelled, no early release, no concurrent stroke);
+      `begin` abandons a stuck stroke; an abandoned erase no longer
+      rewrites Restore; a failed second save keeps still-present strokes
+      out of Restore; a reused overlay window starts hidden. Restore last
+      erase put under the edit lock (pre-existing gap). Page size cache
+      reverted (stale after page insert/orientation change).
+- [x] Full gates: 206 tests, typecheck, lint. README updated.
+- [ ] On device (cannot be done here): build with `npm run build` (needs
+      Android SDK 35 + JDK 17), check the floating button (tap, palm,
+      JS reload), then bump `versionCode`/version for a release.

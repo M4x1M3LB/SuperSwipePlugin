@@ -71,6 +71,18 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
     public LaserOverlayModule(ReactApplicationContext context) {
         super(context);
         current = this;
+        // A window kept from a previous run starts hidden: the new JS side
+        // does not know it is showing, so it would not hide it on pen-down.
+        main.post(() -> {
+            try {
+                if (button != null && wm != null && params != null) {
+                    button.setVisibility(View.INVISIBLE);
+                    params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                    wm.updateViewLayout(button, params);
+                }
+            } catch (Exception ignored) {
+            }
+        });
     }
 
     @Override

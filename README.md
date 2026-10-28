@@ -159,7 +159,8 @@ Floating undo/redo button:
 - It hides as soon as the pen touches the screen, and comes back once the
   pen has stayed up for 3 seconds (timed natively), well to the left of
   the last stroke (60 dp), level with its top.
-- Tap it with a **finger** (a quick touch, under 0.4 s, that does not slide; the pen writes through it into the note): once
+- Tap it with a **finger** (a quick touch, under 0.4 s, that does not
+  slide; the pen writes through it into the note): once
   to undo the last stroke, twice to redo, three times to hide it. A
   **four-finger tap** anywhere shows or hides it again.
 - Undo removes the newest stroke on the page the way the margin wave
@@ -168,6 +169,11 @@ Floating undo/redo button:
   the recent strokes, including why one was skipped (a stroke still being
   handled, or the previous undo still running). Like every LasEr edit,
   it clears the device's own undo history for the page.
+- One edit at a time: a stroke drawn while an undo, redo, LasEr Delete or
+  Restore last erase runs is handled right after it, and those are
+  skipped while a stroke is handled. One that is stuck for longer than the
+  time limit (8 s) is given up on (it makes no further change) and the
+  next one runs.
 - It is a system overlay window from LasEr's native module
   (`android/app/src/main/java/com/superswipe/LaserOverlayModule.java`), the
   technique SuperStickyNote uses. It needs Android's "Display over other
@@ -231,6 +237,9 @@ npm run build     # -> build/outputs/SuperSwipe.snplg
 The floating button is native Android code, built into the package by
 `buildPlugin.sh` (it finds `LaserOverlayPackage`). That needs the Android SDK
 (platform 35, build tools 35.0.0, `ANDROID_HOME`) and JDK 17 (`JAVA_HOME`).
+If that native build fails, `npm run build` stops with an error and makes
+no new package (a `build/outputs/SuperSwipe.snplg` left there is from an
+earlier build).
 
 Layout:
 
