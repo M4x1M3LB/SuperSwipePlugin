@@ -23,7 +23,7 @@ Baseline (2026-10-28, 2baf1fd): 163 tests pass, typecheck and lint clean.
 | WS | Scope | Owner | Status |
 | --- | --- | --- | --- |
 | A | JS hot path: `plugin.ts` queue, `selector.ts` `handlePenUp` pre-checks, `geometry.ts` algorithmic cost | agent (sonnet) | [ ] |
-| B | Device I/O: `host.ts` (PenTracker, reads, release/recycle, timings, permissions), `floating.ts`, `status.ts` | agent (sonnet) | [ ] |
+| B | Device I/O: `host.ts` (PenTracker, reads, release/recycle, timings, permissions), `floating.ts`, `status.ts` | agent (sonnet) | [x] |
 | C | Safety of destructive flows (`selector.ts` erase/delete/undo/repaint, restore in `host.ts`) + native `LaserOverlayModule.java`/manifest | agent (sonnet) | [ ] |
 
 Each writes `docs/audit/findings-<ws>.md`: one entry per finding with
