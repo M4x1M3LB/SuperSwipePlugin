@@ -1061,7 +1061,7 @@ export function createHost(
       return ok;
     },
 
-    async lassoUuids() {
+    async lassoSelection() {
       const held = await call<Element[]>('getLassoElements', () =>
         PluginCommAPI.getLassoElements(),
       );
@@ -1069,7 +1069,7 @@ export function createHost(
         return null;
       }
       // Tracked so they are freed with the others.
-      return wrap(held).map(e => e.uuid);
+      return wrap(held).map(e => ({uuid: e.uuid, layerNum: e.layerNum}));
     },
 
     async lassoBox() {

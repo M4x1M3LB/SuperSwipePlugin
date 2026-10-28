@@ -159,7 +159,8 @@ function fakeHost(
     clearRedo: () => {
       host.undone = [];
     },
-    lassoUuids: async () => host.lassoHeld,
+    lassoSelection: async () =>
+      host.lassoHeld?.map(uuid => ({uuid, layerNum: 0})) ?? null,
     lassoBox: async () => host.lassoBoxValue,
     resetLasso: async () => 'ok',
     setLassoBox: async state => {
@@ -1713,6 +1714,58 @@ describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
     expect(await host.getPageElements('', 3)).toEqual([keep]);
   });
 
+  it('deletes only the strokes found by id when some ids are missing', async () => {
+    const a = el(word(480, 500));
+    const near = el(word(600, 500)); // in the lasso box, not selected
+    const host = fakeHost([a, near]);
+    host.lassoHeld = [a.uuid, 'other-id'];
+    host.lassoBoxValue = {left: 450, top: 480, right: 700, bottom: 540};
+    const lines: string[] = [];
+
+    expect(
+      await deleteSelection(host, DEFAULT_CONFIG, {
+        trace: l => lines.push(l),
+      }),
+    ).toEqual({kind: 'erased', count: 1});
+    expect(await host.getPageElements('', 3)).toEqual([near]);
+    expect(lines).toContain('not found by id: 1, left alone');
+  });
+
+  it('takes the lasso box only on the layers of the selection', async () => {
+    const a = el(word(480, 500), {layerNum: 1});
+    const other = el(word(500, 510)); // layer 0, in the box too
+    const host = fakeHost([a, other]);
+    host.lassoBoxValue = {left: 450, top: 480, right: 600, bottom: 540};
+    host.lassoSelection = async () => [{uuid: 'other-id', layerNum: 1}];
+
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'erased',
+      count: 1,
+    });
+    expect(await host.getPageElements('', 3)).toEqual([other]);
+  });
+
+  it('waits for the pen and checks the page before deleting', async () => {
+    const a = el(word(480, 500));
+    const host = fakeHost([a], {waitForPenUp: async () => false});
+    host.lassoHeld = [a.uuid];
+    expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'pen still down',
+    });
+
+    const pages = [3]; // another page by the time of the delete
+    const host2 = fakeHost([a], {
+      getCurrentPageNum: async () => pages.shift() ?? 4,
+    });
+    host2.lassoHeld = [a.uuid];
+    expect(await deleteSelection(host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'page changed',
+    });
+    expect([...host.deleted, ...host2.deleted]).toEqual([]);
+  });
+
   it('does nothing without a selection', async () => {
     const host = fakeHost([el(word(100, 100))]);
     expect(await deleteSelection(host, DEFAULT_CONFIG)).toEqual({
@@ -1798,6 +1851,27 @@ describe('undoLastStroke (floating button)', () => {
     });
     expect(host.deleted).toEqual([[2], [2]]);
     expect(host.undone).toEqual([]);
+  });
+
+  it('waits for the pen and checks the note before deleting', async () => {
+    const host = fakeHost([el(word(100, 100))], {
+      waitForPenUp: async () => false, // a palm on the button while writing
+    });
+    expect(await undoLastStroke(host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'pen still down',
+    });
+
+    const paths = ['/n/a.note']; // another note by the time of the delete
+    const host2 = fakeHost([el(word(100, 100))], {
+      getCurrentFilePath: async () => paths.shift() ?? '/n/b.note',
+    });
+    expect(await undoLastStroke(host2, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'page changed',
+    });
+    expect([...host.deleted, ...host2.deleted]).toEqual([]);
+    expect(host2.undone).toEqual([]);
   });
 
   it('undoes one stroke per tap, newest first', async () => {

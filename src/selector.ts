@@ -104,8 +104,11 @@ export interface Host {
     sameErase?: boolean,
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
-  /** The uuids of the elements the lasso holds, or null if none/unreadable. */
-  lassoUuids(): Promise<string[] | null>;
+  /**
+   * The uuids and layers of the elements the lasso holds, or null if
+   * none/unreadable.
+   */
+  lassoSelection(): Promise<{uuid: string; layerNum: number}[] | null>;
   /** The lasso box, or null if there is none. */
   lassoBox(): Promise<Box | null>;
   /**
@@ -1209,7 +1212,10 @@ export async function deleteSelection(
   if (!(await host.ensureFileAccess())) {
     return {kind: 'failed', reason: 'file access not granted'};
   }
-  const [held, box] = await Promise.all([host.lassoUuids(), host.lassoBox()]);
+  const [held, box] = await Promise.all([
+    host.lassoSelection(),
+    host.lassoBox(),
+  ]);
   if (!held?.length && !box) {
     return {kind: 'ignored', reason: 'nothing selected'};
   }
@@ -1217,15 +1223,28 @@ export async function deleteSelection(
   trace(`lasso closed: ${await host.setLassoBox('remove')}`);
 
   const elements = await host.getPageElements(path, page);
-  const wanted = new Set(held ?? []);
+  const wanted = new Set((held ?? []).map(h => h.uuid));
   let targets = elements.filter(e => wanted.has(e.uuid));
   trace(`found on the page by id: ${targets.length}`);
-  if (targets.length < wanted.size && box) {
+  if (targets.length > 0 && targets.length < wanted.size) {
+    // Only what was found is deleted: the box would take unselected ink
+    // (it is the freeform lasso's bounding rectangle).
+    trace(`not found by id: ${wanted.size - targets.length}, left alone`);
+  }
+  if (targets.length === 0 && box) {
     // Ids may differ between the lasso and the page read: take what sits
-    // in the lasso box instead.
+    // in the lasso box instead, on the selection's layers when known.
+    const layers = new Set(
+      (held ?? [])
+        .map(h => h.layerNum)
+        .filter(n => typeof n === 'number' && n >= 0),
+    );
     const outlines = await outlinesOf(elements);
-    targets = elements.filter((_, i) => {
+    targets = elements.filter((e, i) => {
       if (outlines[i].length === 0) {
+        return false;
+      }
+      if (layers.size > 0 && !layers.has(e.layerNum)) {
         return false;
       }
       const b = boundingBox(outlines[i]);
@@ -1235,7 +1254,11 @@ export async function deleteSelection(
         cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom
       );
     });
-    trace(`found in the lasso box instead: ${targets.length}`);
+    trace(
+      `found in the lasso box instead: ${targets.length}${
+        layers.size > 0 ? ` (layer ${[...layers].join(', ')})` : ''
+      }`,
+    );
   }
   if (targets.length === 0) {
     return {kind: 'failed', reason: 'selected strokes not found on the page'};
@@ -1246,23 +1269,29 @@ export async function deleteSelection(
   for (const e of targets) {
     layers.set(e.layerNum, [...(layers.get(e.layerNum) ?? []), e]);
   }
+  const contextFor = (group: PageElement[]): Context => ({
+    host,
+    config,
+    path,
+    page,
+    stroke: group[0],
+    others: [],
+    isCancelled,
+    trace,
+    screenRefresh: options.screenRefresh ?? true,
+  });
+  // The lasso is already closed: pen up, same page, then delete.
+  const blocked = await checkBeforeEdit(contextFor(targets), false);
+  if (blocked) {
+    return blocked;
+  }
   let clean = true;
   let ctx: Context | null = null;
   // Every layer's strokes, remembered as each is deleted: Restore puts
   // all of them back.
   const remember = eraseMemory(host, path, page);
   for (const group of layers.values()) {
-    ctx = {
-      host,
-      config,
-      path,
-      page,
-      stroke: group[0],
-      others: [],
-      isCancelled,
-      trace,
-      screenRefresh: options.screenRefresh ?? true,
-    };
+    ctx = contextFor(group);
     const removed = await deleteVerified(ctx, group, gone =>
       remember(group[0].layerNum, gone),
     );
@@ -1317,6 +1346,11 @@ export async function undoLastStroke(
     trace,
     screenRefresh: options.screenRefresh ?? true,
   };
+  // The lasso was reset before the read: pen up, same page, then delete.
+  const blocked = await checkBeforeEdit(ctx, false);
+  if (blocked) {
+    return blocked;
+  }
   // Kept for redo as soon as it is deleted; dropped again if it turns out
   // to be still on the page.
   const removed = await deleteVerified(ctx, [newest], gone =>
@@ -1399,8 +1433,14 @@ async function stillShowing(ctx: Context): Promise<boolean> {
   return path === ctx.path && page === ctx.page;
 }
 
-/** Last checks before the page is modified; returns why not to, if any. */
-async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
+/**
+ * Last checks before the page is modified; returns why not to, if any.
+ * `resetLasso` false: the flow already reset it before reading the page.
+ */
+async function checkBeforeEdit(
+  ctx: Context,
+  resetLasso = true,
+): Promise<Outcome | null> {
   // Editing the page while the pen is down drops the stroke being written.
   if (!(await ctx.host.waitForPenUp(ctx.config.penUpWaitMs))) {
     return {kind: 'ignored', reason: 'pen still down'};
@@ -1417,7 +1457,9 @@ async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   // plugin-made selection come back at the plugin's next edit, unless the
   // stock lasso tool was used in between. The same reset first prevents it
   // (confirmed on device).
-  ctx.trace(`lasso reset: ${await ctx.host.resetLasso()}`);
+  if (resetLasso) {
+    ctx.trace(`lasso reset: ${await ctx.host.resetLasso()}`);
+  }
   return null;
 }
 

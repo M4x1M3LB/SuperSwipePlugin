@@ -150,7 +150,9 @@ same reset ("lasso reset: ok" in the trace): no phantom strokes since.
 LasEr Delete deletes the selection the way the wave erases (lasso closed,
 page saved and read, elements deleted and checked, screen refreshed), and
 **Restore last erase** can put them back, on every layer the selection
-spanned.
+spanned. The selected strokes are found on the page by id; only when none
+is found does it take what sits in the lasso box, on the selection's
+layers.
 
 Floating undo/redo button:
 
