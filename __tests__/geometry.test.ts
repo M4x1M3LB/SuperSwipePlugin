@@ -1,6 +1,7 @@
 import {
   DEFAULT_LOOP_OPTIONS,
   boundingBox,
+  buildPolygonIndex,
   checkClosedLoop,
   closingPair,
   distance,
@@ -19,6 +20,7 @@ import {
   findWritingLine,
   strokesTouch,
   padAndClamp,
+  pointInIndexedPolygon,
   pointInPolygon,
   polygonArea,
   unionBoxes,
@@ -577,6 +579,118 @@ describe('insideAtLeast', () => {
         fractionInside(points, polygon) >= f,
       );
       expect(insideAtLeast(points, polygon, f, boundingBox(polygon))).toBe(
+        fractionInside(points, polygon) >= f,
+      );
+    }
+  });
+});
+
+describe('pointInIndexedPolygon', () => {
+  /** A random polygon of one of several kinds, on an integer or float grid. */
+  function polygonOf(next: () => number, kind: number): Pt[] {
+    const n = 3 + Math.floor(next() * (kind === 4 ? 400 : 60));
+    const grid = kind % 2 === 0;
+    const at = (v: number) => (grid ? Math.round(v * 40) : v * 40);
+    if (kind === 0 || kind === 1) {
+      // Anything goes: concave, self-crossing, repeated vertices.
+      return Array.from({length: n}, () => ({x: at(next()), y: at(next())}));
+    }
+    // A loop drawn two or three times, with jitter, as by a hand.
+    const turns = 1 + Math.floor(next() * 3);
+    return Array.from({length: n * turns}, (_, i) => {
+      const a = (i / n) * 2 * Math.PI;
+      const r = 15 + 5 * next();
+      return {
+        x: at(0.5 + (r / 40) * Math.cos(a)),
+        y: at(0.5 + (r / 40) * Math.sin(a)),
+      };
+    });
+  }
+
+  it('gives the same answer as pointInPolygon everywhere', () => {
+    const next = random(77);
+    let inside = 0;
+    let tested = 0;
+    for (let k = 0; k < 600; k++) {
+      const polygon = polygonOf(next, k % 5);
+      const index = buildPolygonIndex(polygon);
+      const points: Pt[] = [
+        ...polygon, // exactly on vertices
+        ...Array.from({length: 150}, () => ({
+          x: Math.round(next() * 60 - 10),
+          y: Math.round(next() * 60 - 10),
+        })),
+        ...Array.from({length: 50}, () => ({
+          x: next() * 60 - 10,
+          y: next() * 60 - 10,
+        })),
+      ];
+      // Exactly on edges (midpoints and quarter points) and level with vertices.
+      for (let i = 0; i < polygon.length; i++) {
+        const a = polygon[i];
+        const b = polygon[(i + 1) % polygon.length];
+        points.push(
+          {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2},
+          {x: (3 * a.x + b.x) / 4, y: (3 * a.y + b.y) / 4},
+          {x: b.x + 7, y: a.y},
+          {x: a.x - 3, y: b.y},
+        );
+      }
+      for (const p of points) {
+        const expected = pointInPolygon(p, polygon);
+        if (pointInIndexedPolygon(p, index) !== expected) {
+          throw new Error(`mismatch at ${p.x},${p.y} (polygon ${k})`);
+        }
+        tested++;
+        inside += expected ? 1 : 0;
+      }
+    }
+    // Both answers must be well represented.
+    expect(tested).toBeGreaterThan(100000);
+    expect(inside).toBeGreaterThan(tested / 10);
+    expect(inside).toBeLessThan(tested - tested / 10);
+  });
+
+  it('handles flat and degenerate polygons like pointInPolygon', () => {
+    const polygons: Pt[][] = [
+      [],
+      [{x: 1, y: 1}],
+      [
+        {x: 0, y: 5},
+        {x: 10, y: 5},
+        {x: 20, y: 5},
+      ],
+      [
+        {x: 0, y: 0},
+        {x: 0, y: 10},
+        {x: 0, y: 0},
+      ],
+    ];
+    for (const polygon of polygons) {
+      const index = buildPolygonIndex(polygon);
+      for (const p of [
+        {x: 0, y: 5},
+        {x: 5, y: 5},
+        {x: 0, y: 0},
+        {x: 3, y: NaN},
+      ]) {
+        expect(pointInIndexedPolygon(p, index)).toBe(
+          pointInPolygon(p, polygon),
+        );
+      }
+    }
+  });
+
+  it('is used by insideAtLeast for big polygons without changing it', () => {
+    const next = random(5);
+    for (let k = 0; k < 200; k++) {
+      const polygon = polygonOf(next, 4);
+      const points = Array.from({length: 40}, () => ({
+        x: Math.round(next() * 60 - 10),
+        y: Math.round(next() * 60 - 10),
+      }));
+      const f = [0, 0.3, 0.5, 0.9, 1][k % 5];
+      expect(insideAtLeast(points, polygon, f)).toBe(
         fractionInside(points, polygon) >= f,
       );
     }

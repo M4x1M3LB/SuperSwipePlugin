@@ -137,6 +137,129 @@ export function pointInPolygon(p: Pt, polygon: Pt[]): boolean {
   return winding !== 0;
 }
 
+/**
+ * The polygon's edges listed under each horizontal band they span, so a
+ * point only visits the edges that can change its winding number.
+ */
+export interface PolygonIndex {
+  polygon: Pt[];
+  minY: number;
+  maxY: number;
+  /** Bands per px of height. */
+  scale: number;
+  /** Edges of band k are `edges[starts[k]..starts[k + 1]]` (edge i is polygon[i - 1] to polygon[i]). */
+  starts: Int32Array;
+  edges: Int32Array;
+}
+
+/** Polygons with fewer vertices are not worth indexing. */
+const INDEX_MIN_VERTICES = 32;
+
+/**
+ * Index `polygon` (implicitly closed, not changed afterwards) for
+ * `pointInIndexedPolygon`. Edges that do not move in y never count in the
+ * winding number, so they are left out.
+ */
+export function buildPolygonIndex(polygon: Pt[]): PolygonIndex {
+  const n = polygon.length;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of polygon) {
+    if (p.y < minY) {
+      minY = p.y;
+    }
+    if (p.y > maxY) {
+      maxY = p.y;
+    }
+  }
+  const bands = Math.max(1, n);
+  // One band when the height is 0 or not finite (then only the edge test runs).
+  const scale =
+    maxY - minY > 0 && isFinite(maxY - minY) ? bands / (maxY - minY) : 0;
+  const bandOf = (y: number) =>
+    Math.min(bands - 1, Math.max(0, Math.floor((y - minY) * scale)));
+  // Two passes: count the edges per band, then fill.
+  const starts = new Int32Array(bands + 1);
+  const spans = (i: number) => {
+    const a = polygon[(i + n - 1) % n];
+    const b = polygon[i];
+    return a.y < b.y ? [bandOf(a.y), bandOf(b.y)] : [bandOf(b.y), bandOf(a.y)];
+  };
+  for (let i = 0; i < n; i++) {
+    if (polygon[(i + n - 1) % n].y !== polygon[i].y) {
+      const [lo, hi] = spans(i);
+      for (let k = lo; k <= hi; k++) {
+        starts[k + 1]++;
+      }
+    }
+  }
+  for (let k = 0; k < bands; k++) {
+    starts[k + 1] += starts[k];
+  }
+  const edges = new Int32Array(starts[bands]);
+  const next = starts.slice(0, bands);
+  for (let i = 0; i < n; i++) {
+    if (polygon[(i + n - 1) % n].y !== polygon[i].y) {
+      const [lo, hi] = spans(i);
+      for (let k = lo; k <= hi; k++) {
+        edges[next[k]++] = i;
+      }
+    }
+  }
+  return {polygon, minY, maxY, scale, starts, edges};
+}
+
+/**
+ * `pointInPolygon(p, index.polygon)`, exactly: the same winding number
+ * over the edges of the point's band (the others never cross its y).
+ */
+export function pointInIndexedPolygon(p: Pt, index: PolygonIndex): boolean {
+  // Outside this range no edge has a.y <= p.y < b.y (or the reverse).
+  if (!(p.y >= index.minY && p.y < index.maxY)) {
+    return false;
+  }
+  const {polygon, starts, edges} = index;
+  const n = polygon.length;
+  const k = Math.min(
+    starts.length - 2,
+    Math.max(0, Math.floor((p.y - index.minY) * index.scale)),
+  );
+  let winding = 0;
+  for (let e = starts[k]; e < starts[k + 1]; e++) {
+    const i = edges[e];
+    const a = polygon[(i + n - 1) % n];
+    const b = polygon[i];
+    const side = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+    if (a.y <= p.y) {
+      if (b.y > p.y && side > 0) {
+        winding++;
+      }
+    } else if (b.y <= p.y && side < 0) {
+      winding--;
+    }
+  }
+  return winding !== 0;
+}
+
+/** Indexes of the polygons `insideAtLeast` has seen, built once per loop. */
+const indexes = new WeakMap<Pt[], PolygonIndex | null>();
+
+function indexOf(polygon: Pt[]): PolygonIndex | null {
+  let index = indexes.get(polygon);
+  if (index === undefined) {
+    index =
+      polygon.length >= INDEX_MIN_VERTICES && polygon.every(isFinitePt)
+        ? buildPolygonIndex(polygon)
+        : null;
+    indexes.set(polygon, index);
+  }
+  return index;
+}
+
+function isFinitePt(p: Pt): boolean {
+  return isFinite(p.x) && isFinite(p.y);
+}
+
 /** Fraction (0..1) of `points` that fall inside `polygon`. */
 export function fractionInside(points: Pt[], polygon: Pt[]): number {
   if (points.length === 0) {
@@ -181,7 +304,8 @@ export function minCountFor(fraction: number, n: number): number {
 
 /**
  * `fractionInside(points, polygon) >= fraction`, stopping as soon as the
- * answer is known. `polygonBox` must be the polygon's bounding box.
+ * answer is known. `polygonBox` must be the polygon's bounding box. A big
+ * polygon is indexed on first use, so it must not change afterwards.
  */
 export function insideAtLeast(
   points: Pt[],
@@ -198,6 +322,7 @@ export function insideAtLeast(
     return true;
   }
   const box = polygonBox;
+  const index = indexOf(polygon);
   let count = 0;
   for (let i = 0; i < n; i++) {
     if (count + (n - i) < needed) {
@@ -209,7 +334,7 @@ export function insideAtLeast(
       p.x <= box.right &&
       p.y >= box.top &&
       p.y <= box.bottom &&
-      pointInPolygon(p, polygon)
+      (index ? pointInIndexedPolygon(p, index) : pointInPolygon(p, polygon))
     ) {
       count++;
       if (count >= needed) {
