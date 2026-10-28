@@ -639,6 +639,12 @@ export function createHost(
   // Both file permissions were "always allow" at the last check: no need to
   // ask again until a file call fails.
   let fileAccessOk = false;
+  // Page sizes already read, by path and page (the size does not change
+  // while a note is open). Small; forgotten when the file path changes and
+  // after a reload.
+  const PAGE_SIZES_KEPT = 8;
+  const pageSizes = new Map<string, {width: number; height: number}>();
+  let pageSizesPath = '';
 
   const reader = new DirectPointReader(
     deps.pointApi !== undefined ? deps.pointApi : nativePointApi(),
@@ -848,10 +854,28 @@ export function createHost(
       );
     },
 
-    getPageSize(path, page) {
-      return call<{width: number; height: number}>('getPageSize', () =>
-        PluginFileAPI.getPageSize(path, page),
+    async getPageSize(path, page) {
+      if (path !== pageSizesPath) {
+        pageSizes.clear();
+        pageSizesPath = path;
+      }
+      const key = `${path}#${page}`;
+      const known = pageSizes.get(key);
+      if (known) {
+        return known;
+      }
+      const size = await call<{width: number; height: number}>(
+        'getPageSize',
+        () => PluginFileAPI.getPageSize(path, page),
       );
+      // Only a good read is kept: a failure is tried again next time.
+      if (size && path === pageSizesPath) {
+        if (pageSizes.size >= PAGE_SIZES_KEPT) {
+          pageSizes.delete(pageSizes.keys().next().value as string);
+        }
+        pageSizes.set(key, size);
+      }
+      return size;
     },
 
     async getPageElements(path, page) {
@@ -1055,6 +1079,7 @@ export function createHost(
         PluginCommAPI.reloadFile(),
       );
       const ok = reloaded !== null && reloaded !== false;
+      pageSizes.clear();
       if (!ok) {
         fileCallFailed('reloadFile');
       }
