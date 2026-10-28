@@ -792,19 +792,26 @@ async function selectBesideBar(
   }
 
   const outline = await stroke.outline();
-  const outlines = await outlinesOf(ctx.others);
+  const barBox = boundingBox(outline);
+  const touches = (pts: Pt[], box: Box) =>
+    strokesTouch(outline, pts, config.eraseTouchTolerance, barBox, box);
+  // Touching any one stroke refuses the bar: stop reading at the first
+  // (the newest strokes first: the text the bar was drawn over).
+  const outlines = await outlinesOf(ctx.others, {
+    newestFirst: true,
+    visit: pts => pts.length > 0 && touches(pts, boundingBox(pts)),
+  });
   if (host.penDownCount() !== downsAtStart) {
     return keptWriting;
   }
-  const barBox = boundingBox(outline);
   const boxes: Box[] = [];
   for (let i = 0; i < outlines.length; i++) {
     const pts = outlines[i];
-    if (pts.length === 0) {
+    if (!pts || pts.length === 0) {
       continue;
     }
     const box = boundingBox(pts);
-    if (strokesTouch(outline, pts, config.eraseTouchTolerance, barBox, box)) {
+    if (touches(pts, box)) {
       return {kind: 'ignored', reason: 'bar touches the writing'};
     }
     boxes.push(box);
@@ -864,17 +871,10 @@ async function selectBesideLine(
 
   const lineY = (line.from.y + line.to.y) / 2;
   const lineBox = boundingBox(outline);
-  const outlines = await outlinesOf(ctx.others);
-  const above: Box[] = [];
-  const below: Box[] = [];
-  for (let i = 0; i < outlines.length; i++) {
-    const pts = outlines[i];
-    if (pts.length === 0) {
-      continue;
-    }
-    const box = boundingBox(pts);
+  // Why one stroke refuses the line, if it does.
+  const refusal = (pts: Pt[], box: Box): string | null => {
     if (strokesTouch(outline, pts, config.eraseTouchTolerance, lineBox, box)) {
-      return {kind: 'ignored', reason: 'line crosses the writing'};
+      return 'line crosses the writing';
     }
     // Writing just above the line, in its span: an underline (drawn
     // further below the letters than writing comes above a separator).
@@ -887,12 +887,29 @@ async function selectBesideLine(
         ? config.lineUnderlineClearance
         : config.lineClearance;
     if (gap < clearance) {
-      return {
-        kind: 'ignored',
-        reason: overlaps
-          ? `writing ${Math.round(gap)} px from the line (an underline?)`
-          : 'writing level with the line (a blank or an arrow?)',
-      };
+      return overlaps
+        ? `writing ${Math.round(gap)} px from the line (an underline?)`
+        : 'writing level with the line (a blank or an arrow?)';
+    }
+    return null;
+  };
+  // One refusing stroke is enough: stop reading at the first (the newest
+  // strokes first: the text the line was drawn under or through).
+  const outlines = await outlinesOf(ctx.others, {
+    newestFirst: true,
+    visit: pts => pts.length > 0 && refusal(pts, boundingBox(pts)) !== null,
+  });
+  const above: Box[] = [];
+  const below: Box[] = [];
+  for (let i = 0; i < outlines.length; i++) {
+    const pts = outlines[i];
+    if (!pts || pts.length === 0) {
+      continue;
+    }
+    const box = boundingBox(pts);
+    const refused = refusal(pts, box);
+    if (refused) {
+      return {kind: 'ignored', reason: refused};
     }
     ((box.top + box.bottom) / 2 < lineY ? above : below).push(box);
   }
@@ -1396,14 +1413,30 @@ const READ_POOL = 64;
  * The elements' outlines, in their order. Each read is a call to the
  * device, and waiting for them one by one is slow on a full page: up to
  * READ_POOL are in flight, and the next starts as soon as one finishes.
+ *
+ * `visit` sees each outline as it arrives; once it returns true no new read
+ * starts (those in flight finish) and the unread entries are left empty.
+ * `newestFirst` starts the reads from the newest element; the result is
+ * still in the elements' order.
  */
-export async function outlinesOf(elements: PageElement[]): Promise<Pt[][]> {
+export async function outlinesOf(
+  elements: PageElement[],
+  options: {newestFirst?: boolean; visit?: (outline: Pt[]) => boolean} = {},
+): Promise<Pt[][]> {
   const result: Pt[][] = new Array(elements.length);
+  const order = elements.map((_, i) => i);
+  if (options.newestFirst) {
+    order.sort((a, b) => elements[b].numInPage - elements[a].numInPage);
+  }
   let next = 0;
+  let stopped = false;
   const worker = async () => {
-    while (next < elements.length) {
-      const i = next++;
+    while (next < order.length && !stopped) {
+      const i = order[next++];
       result[i] = await elements[i].outline();
+      if (options.visit?.(result[i])) {
+        stopped = true;
+      }
     }
   };
   const workers: Promise<void>[] = [];

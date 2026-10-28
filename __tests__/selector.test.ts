@@ -1645,6 +1645,105 @@ describe('outlinesOf', () => {
   });
 });
 
+describe('handlePenUp: early stop on a certain refusal', () => {
+  beforeEach(() => {
+    nextNum = 1;
+  });
+
+  /** Words far from the gestures below (under them), 5 per row. */
+  const filler = (count = 200) =>
+    Array.from({length: count}, (_, i) =>
+      el(word(100 + (i % 5) * 150, 1000 + Math.floor(i / 5) * 20, 60)),
+    );
+  const counted = (elements: PageElement[]) => {
+    const reads = {n: 0};
+    for (const e of elements) {
+      const read = e.outline;
+      e.outline = () => {
+        reads.n++;
+        return read();
+      };
+    }
+    return reads;
+  };
+
+  it('stops reading the page for an underline once the newest stroke refuses it', async () => {
+    const others = filler();
+    const text = el(word(100, 600));
+    const underline = el(straight({x: 100, y: 615}, {x: 600, y: 615}));
+    const all = [...others, text, underline];
+    const reads = counted(all);
+    const host = fakeHost(all);
+
+    expect(await handlePenUp([underline], host, DEFAULT_CONFIG)).toMatchObject({
+      kind: 'ignored',
+      reason: expect.stringContaining('an underline'),
+    });
+    // The gesture's own read, and about one pool of others: not the 200.
+    expect(reads.n).toBeLessThanOrEqual(1 + 64 + 1);
+  });
+
+  it('stops reading the page for a bar touching the writing', async () => {
+    const others = filler();
+    const touched = el(letter(98, 500));
+    const mark = el(straight({x: 100, y: 495}, {x: 103, y: 705}));
+    const all = [...others, touched, mark];
+    const reads = counted(all);
+    const host = fakeHost(all);
+
+    expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'bar touches the writing',
+    });
+    expect(reads.n).toBeLessThanOrEqual(2 + 64 + 1);
+  });
+
+  it('reads the whole page and selects the same for an accepted line, whatever the page order', async () => {
+    const build = () => {
+      nextNum = 1;
+      const above = [el(word(100, 600)), el(word(300, 700))];
+      const far = filler(100);
+      const line = el(straight({x: 100, y: 800}, {x: 1000, y: 802}));
+      return {line, page: [...above, ...far, line]};
+    };
+    const a = build();
+    const readsA = counted(a.page.slice(0, -1));
+    const hostA = fakeHost(a.page);
+    const outcomeA = await handlePenUp([a.line], hostA, DEFAULT_CONFIG);
+    expect(outcomeA).toMatchObject({kind: 'selected', count: 100});
+    // Everything on the page was read: nothing to stop for.
+    expect(readsA.n).toBe(a.page.length - 1);
+
+    const b = build();
+    const hostB = fakeHost([...b.page.slice(0, -1).reverse(), b.line]);
+    expect(await handlePenUp([b.line], hostB, DEFAULT_CONFIG)).toEqual(
+      outcomeA,
+    );
+    expect(hostB.lassoed).toEqual(hostA.lassoed);
+  });
+
+  it('outlinesOf starts from the newest and stops after a visit says so', async () => {
+    const started: number[] = [];
+    const elements = Array.from({length: 200}, () => el([{x: 0, y: 0}]));
+    for (const e of elements) {
+      const read = e.outline;
+      e.outline = () => {
+        started.push(e.numInPage);
+        return read();
+      };
+    }
+    const outlines = await outlinesOf(elements, {
+      newestFirst: true,
+      visit: () => started.length >= 10,
+    });
+    expect(started[0]).toBe(elements[199].numInPage);
+    expect(started.length).toBeLessThanOrEqual(10 + 64);
+    expect(outlines).toHaveLength(200);
+    expect(outlines[199]).toBeDefined();
+    expect(outlines[0]).toBeUndefined();
+  });
+});
+
 describe('deleteSelection (lasso toolbar LasEr Delete)', () => {
   beforeEach(() => {
     nextNum = 1;
