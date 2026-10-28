@@ -161,6 +161,125 @@ describe('release', () => {
   });
 });
 
+describe('erase spanning layers', () => {
+  it('restores every layer of one erase', async () => {
+    mockCurrentPath.mockResolvedValue(ok('/n.note'));
+    mockInsert.mockResolvedValue(ok(true));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const raw = strokes('a', 'b', 'c');
+    const [a, b, c] = host.wrap(raw);
+    host.rememberErased('/n.note', 0, 0, [a, b]);
+    host.rememberErased('/n.note', 0, 1, [c], true);
+    host.release();
+    expect(mockRecycle).not.toHaveBeenCalled(); // all kept for the restore
+
+    expect(await host.restoreLastErase()).toBe('Restored 3 strokes on page 1.');
+    expect(mockInsert.mock.calls).toEqual([
+      [[raw[0], raw[1]], 0, 0],
+      [[raw[2]], 0, 1],
+    ]);
+  });
+
+  it('replaces a layer with fewer strokes, and a new erase replaces all', async () => {
+    mockCurrentPath.mockResolvedValue(ok('/n.note'));
+    mockInsert.mockResolvedValue(ok(true));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const raw = strokes('a', 'b', 'c');
+    const [a, b, c] = host.wrap(raw);
+    host.rememberErased('/n.note', 0, 0, [a, b]);
+    host.rememberErased('/n.note', 0, 0, [a], true); // b still on the page
+    expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+    expect(mockInsert.mock.calls).toEqual([[[raw[0]], 0, 0]]);
+
+    host.rememberErased('/n.note', 0, 0, [b]);
+    host.rememberErased('/n.note', 0, 1, [c]); // not the same erase
+    mockInsert.mockClear();
+    expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+    expect(mockInsert.mock.calls).toEqual([[[raw[2]], 0, 1]]);
+  });
+
+  it('after a partial restore, keeps only the layers not put back', async () => {
+    mockCurrentPath.mockResolvedValue(ok('/n.note'));
+    mockInsert
+      .mockResolvedValueOnce(ok(true))
+      .mockResolvedValueOnce({success: false, error: {code: 1, message: 'x'}})
+      .mockResolvedValue(ok(true));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const raw = strokes('a', 'b');
+    const [a, b] = host.wrap(raw);
+    host.rememberErased('/n.note', 0, 0, [a]);
+    host.rememberErased('/n.note', 0, 1, [b], true);
+
+    expect(await host.restoreLastErase()).toBe(
+      'Restored 1 strokes; could not restore the others.',
+    );
+    expect(await host.restoreLastErase()).toBe('Restored 1 strokes on page 1.');
+    expect(mockInsert.mock.calls.map(call => call[2])).toEqual([0, 1, 1]);
+  });
+});
+
+describe('undone strokes', () => {
+  it('forgets an undone stroke that is still on the page', async () => {
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const [a] = host.wrap(strokes('a'));
+    host.keepUndone('/n.note', 0, 0, a);
+    host.forgetUndone(a);
+    expect(await host.redo()).toBe('Nothing to redo.');
+  });
+});
+
+describe('page reads', () => {
+  it('says when the save before a read failed', async () => {
+    mockGetElements.mockResolvedValue(ok([]));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    mockSave.mockResolvedValueOnce({
+      success: false,
+      error: {code: 1, message: 'x'},
+    });
+    await host.getPageElements('/n.note', 0);
+    expect(host.lastSaveFailed()).toBe(true);
+    mockSave.mockResolvedValueOnce(ok(true));
+    await host.getPageElements('/n.note', 0);
+    expect(host.lastSaveFailed()).toBe(false);
+  });
+});
+
+describe('redo', () => {
+  it('keeps the stroke being redone when a stroke ends meanwhile', async () => {
+    let answer!: (v: unknown) => void;
+    mockCurrentPath.mockReturnValue(new Promise(r => (answer = r)));
+    mockInsert.mockResolvedValue(ok(true));
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const [a] = host.wrap(strokes('a'));
+    host.keepUndone('/n.note', 0, 0, a);
+
+    const redone = host.redo();
+    host.release(); // a stroke drawn meanwhile ends now
+    expect(mockRecycle).not.toHaveBeenCalled();
+    answer(ok('/n.note'));
+    expect(await redone).toBe('Redone.');
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockRecycle.mock.calls).toEqual([['a']]);
+  });
+
+  it('keeps the stroke redoable when the insert fails', async () => {
+    mockCurrentPath.mockResolvedValue(ok('/n.note'));
+    mockInsert.mockResolvedValue({
+      success: false,
+      error: {code: 1, message: 'x'},
+    });
+    const host = createHost(new PenTracker(), {pointApi: null});
+    const [a] = host.wrap(strokes('a'));
+    host.keepUndone('/n.note', 0, 0, a);
+
+    expect(await host.redo()).toBe('Could not redo the stroke.');
+    host.release();
+    expect(mockRecycle).not.toHaveBeenCalled();
+    mockInsert.mockResolvedValue(ok(true));
+    expect(await host.redo()).toBe('Redone.');
+  });
+});
+
 describe('file access', () => {
   it('checks both permissions at once and caches "always allow"', async () => {
     const pending: ((v: number) => void)[] = [];

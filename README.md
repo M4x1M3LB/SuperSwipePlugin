@@ -25,7 +25,8 @@ All gestures:
 - Work with the ink pens (fineliner, pressure pen, calligraphy). The marker
   is ignored, so highlighter circles and lines stay ink.
 - Wait for the pen to lift before changing the page, and cancel if you turn
-  the page or switch files in the meantime.
+  the page or switch files in the meantime. A gesture is left as ink when
+  the pen stays down for more than 5 seconds (a long stroke right after it).
 - Only work in NOTE files (not PDFs/documents).
 - Can each be turned on or off from the plugin screen.
 - Are found even when quickly followed by more writing: the device delivers
@@ -126,8 +127,12 @@ Margin wave to erase:
 - Nothing is read from or saved to the note unless the stroke has the shape
   of a wave (checked on the stroke as delivered, either way round, with
   ratios only, so its scale and axes do not matter).
+- The erase is checked by reading the page back. Strokes still found are
+  deleted again only when a second read agrees, both saves went through
+  and the same page is still showing; otherwise they are left alone.
 - **Restore last erase** on the plugin screen puts the last erased line
-  back (same note; the plugin keeps it until the next erase).
+  back (same note; the plugin keeps it until the next erase, from the
+  moment it is deleted, and never strokes the check found still there).
 - Afterwards the screen is refreshed (switch on the plugin screen), so the
   erased strokes do not linger as ghosts: the note is reloaded, which
   repaints the page. Only once the saved file has been read back and no
@@ -144,7 +149,10 @@ every edit the plugin completely removes the lasso box, which does the
 same reset ("lasso reset: ok" in the trace): no phantom strokes since.
 LasEr Delete deletes the selection the way the wave erases (lasso closed,
 page saved and read, elements deleted and checked, screen refreshed), and
-**Restore last erase** can put them back.
+**Restore last erase** can put them back, on every layer the selection
+spanned. The selected strokes are found on the page by id; only when none
+is found does it take what sits in the lasso box, on the selection's
+layers.
 
 Floating undo/redo button:
 

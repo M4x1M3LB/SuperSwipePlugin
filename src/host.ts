@@ -153,8 +153,11 @@ export class PenTracker {
   private downs = 0;
   private lastDownAt = 0;
   private lastEventAt = 0;
-  private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
-    [];
+  private waiters: {
+    since: number;
+    maxWaitMs: number;
+    resolve: (up: boolean) => void;
+  }[] = [];
   private listener: ((event: MotionEvent | null | undefined) => void) | null =
     null;
 
@@ -176,6 +179,15 @@ export class PenTracker {
         this.listener(event);
       } catch {}
     }
+    this.track(event);
+    // Any event wakes the waiters, hover and finger ones too: a pen whose
+    // UP was missed is then found silent (stale), and a wait still times out.
+    if (this.waiters.length > 0) {
+      this.wakeWaiters(Date.now());
+    }
+  }
+
+  private track(event: MotionEvent | null | undefined): void {
     if (event?.toolType !== TOOL_PEN) {
       return;
     }
@@ -195,12 +207,9 @@ export class PenTracker {
     if (action === ACTION_DOWN) {
       this.down = true;
       this.downs++;
-      this.lastDownAt = Date.now();
+      this.lastDownAt = now;
     } else if (action === ACTION_UP || action === ACTION_CANCEL) {
       this.down = false;
-    }
-    if (this.waiters.length > 0) {
-      this.wakeWaiters(now);
     }
   }
 
@@ -209,13 +218,17 @@ export class PenTracker {
   }
 
   private wakeWaiters(now: number): void {
-    this.waiters = this.waiters.filter(w => {
-      if (this.isUp(now) || now - w.since > w.maxWaitMs) {
-        w.resolve();
-        return false;
+    // Compacted in place: called on every pen event while waiting.
+    const up = this.isUp(now);
+    let kept = 0;
+    for (const w of this.waiters) {
+      if (up || now - w.since > w.maxWaitMs) {
+        w.resolve(up);
+      } else {
+        this.waiters[kept++] = w;
       }
-      return true;
-    });
+    }
+    this.waiters.length = kept;
   }
 
   /** How many times the pen has touched the screen so far. */
@@ -232,10 +245,14 @@ export class PenTracker {
     return this.isUp(Date.now()) && this.lastDownAt < time;
   }
 
-  waitForUp(maxWaitMs: number): Promise<void> {
+  /**
+   * Resolves true once the pen is off the screen, false if it is still down
+   * after `maxWaitMs` (checked on the next motion event).
+   */
+  waitForUp(maxWaitMs: number): Promise<boolean> {
     const now = Date.now();
     if (this.isUp(now)) {
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     return new Promise(resolve => {
       this.waiters.push({since: now, maxWaitMs, resolve});
@@ -563,9 +580,12 @@ export async function ensureFileAccess(): Promise<boolean> {
 interface ErasedStrokes {
   path: string;
   page: number;
-  layer: number;
-  elements: Element[];
+  /** One erase can span layers: deletePageElements works per layer. */
+  groups: {layer: number; elements: Element[]}[];
 }
+
+const elementsOf = (erase: ErasedStrokes | null): Element[] =>
+  erase ? erase.groups.flatMap(g => g.elements) : [];
 
 export interface DeviceHost extends Host {
   /**
@@ -581,6 +601,7 @@ export interface DeviceHost extends Host {
   timeLine(totalMs: number): string;
   /** Did handling the stroke read the page (save and getElements)? */
   pageWasRead(): boolean;
+  lastSaveFailed(): boolean;
 }
 
 const STROKE = 0;
@@ -602,6 +623,9 @@ export function createHost(
   let erased: ErasedStrokes | null = null;
   // The erase being restored: still needed by insertPageElements.
   let restoring: ErasedStrokes | null = null;
+  // The stroke being redone: out of `undone`, still needed by
+  // insertPageElements.
+  let redoing: Element | null = null;
 
   let trace: Trace = () => {};
   let timings = new Timings();
@@ -610,6 +634,8 @@ export function createHost(
   let tracedFallback = false;
   // When the note was last saved, for reloadIfQuiet.
   let savedAt = 0;
+  // Whether that save failed (the file read after it may be old).
+  let saveFailed = false;
   // Both file permissions were "always allow" at the last check: no need to
   // ask again until a file call fails.
   let fileAccessOk = false;
@@ -836,6 +862,7 @@ export function createHost(
       const saved = await request('saveCurrentNote', () =>
         PluginNoteAPI.saveCurrentNote(),
       );
+      saveFailed = !saved.ok;
       if (!saved.ok) {
         fileCallFailed('saveCurrentNote');
       }
@@ -865,6 +892,10 @@ export function createHost(
       }
     },
 
+    lastSaveFailed() {
+      return saveFailed;
+    },
+
     waitForPenUp(maxWaitMs) {
       return pen.waitForUp(maxWaitMs);
     },
@@ -879,15 +910,26 @@ export function createHost(
       return ok === true;
     },
 
-    rememberErased(path, page, layer, elements) {
-      const previous = erased;
+    rememberErased(path, page, layer, elements, sameErase = false) {
       const raw = elements
         .map(e => rawElements.get(e))
         .filter((e): e is Element => e !== undefined);
-      erased = {path, page, layer, elements: raw};
+      if (sameErase && erased?.path === path && erased.page === page) {
+        // Another layer of this erase, or fewer strokes for one of its
+        // layers. Strokes dropped here were read while handling this
+        // erase: release() frees them.
+        const groups = erased.groups.filter(g => g.layer !== layer);
+        if (raw.length > 0) {
+          groups.push({layer, elements: raw});
+        }
+        erased = groups.length > 0 ? {path, page, groups} : null;
+        return;
+      }
+      const previous = erased;
+      erased = {path, page, groups: [{layer, elements: raw}]};
       if (previous) {
         const keep = new Set(raw.map(e => e.uuid));
-        recycleAll(previous.elements.filter(e => !keep.has(e.uuid)));
+        recycleAll(elementsOf(previous).filter(e => !keep.has(e.uuid)));
       }
     },
 
@@ -904,7 +946,7 @@ export function createHost(
         if (erased === null) {
           erased = target;
         } else {
-          recycleAll(target.elements); // a newer erase replaced it
+          recycleAll(elementsOf(target)); // a newer erase replaced it
         }
       };
       let done = false;
@@ -912,22 +954,42 @@ export function createHost(
         if ((await this.getCurrentFilePath()) !== target.path) {
           return 'Open the note the strokes were erased from, then try again.';
         }
-        const {page, layer, elements} = target;
-        const ok = await call<boolean>('insertPageElements', () =>
-          PluginCommAPI.insertPageElements(elements, page, layer),
-        );
-        if (ok !== true) {
-          fileCallFailed('insertPageElements');
-          return 'Could not restore the erased strokes.';
+        const page = target.page;
+        let restored = 0;
+        // Layer by layer; a layer put back leaves the erase, so a retry
+        // after a failure never inserts it twice.
+        while (target.groups.length > 0) {
+          const {layer, elements} = target.groups[0];
+          const ok = await call<boolean>('insertPageElements', () =>
+            PluginCommAPI.insertPageElements(elements, page, layer),
+          );
+          if (ok !== true) {
+            fileCallFailed('insertPageElements');
+            return restored > 0
+              ? `Restored ${restored} strokes; could not restore the others.`
+              : 'Could not restore the erased strokes.';
+          }
+          target.groups = target.groups.slice(1);
+          restored += elements.length;
+          recycleAll(elements);
         }
         done = true;
         restoring = null;
-        recycleAll(elements);
-        return `Restored ${elements.length} strokes on page ${page + 1}.`;
+        return `Restored ${restored} strokes on page ${page + 1}.`;
       } finally {
         if (!done) {
           putBack(); // also on a throw: the strokes stay restorable
         }
+      }
+    },
+
+    forgetUndone(element) {
+      // Still on the page after all. Read while handling this undo:
+      // release() frees it.
+      const raw = rawElements.get(element);
+      const i = undone.findIndex(u => u.element === raw);
+      if (i >= 0) {
+        undone.splice(i, 1);
       }
     },
 
@@ -948,20 +1010,33 @@ export function createHost(
       if (!last) {
         return 'Nothing to redo.';
       }
-      if ((await this.getCurrentFilePath()) !== last.path) {
-        undone.push(last);
-        return 'Open the note the stroke was undone in, then try again.';
+      redoing = last.element;
+      let done = false;
+      try {
+        if ((await this.getCurrentFilePath()) !== last.path) {
+          return 'Open the note the stroke was undone in, then try again.';
+        }
+        const ok = await call<boolean>('insertPageElements', () =>
+          PluginCommAPI.insertPageElements(
+            [last.element],
+            last.page,
+            last.layer,
+          ),
+        );
+        if (ok !== true) {
+          fileCallFailed('insertPageElements');
+          return 'Could not redo the stroke.';
+        }
+        done = true;
+        redoing = null;
+        recycleAll([last.element]);
+        return 'Redone.';
+      } finally {
+        if (!done) {
+          redoing = null;
+          undone.push(last); // also on a throw: it stays redoable
+        }
       }
-      const ok = await call<boolean>('insertPageElements', () =>
-        PluginCommAPI.insertPageElements([last.element], last.page, last.layer),
-      );
-      if (ok !== true) {
-        undone.push(last);
-        fileCallFailed('insertPageElements');
-        return 'Could not redo the stroke.';
-      }
-      recycleAll([last.element]);
-      return 'Redone.';
     },
 
     clearRedo() {
@@ -986,7 +1061,7 @@ export function createHost(
       return ok;
     },
 
-    async lassoUuids() {
+    async lassoSelection() {
       const held = await call<Element[]>('getLassoElements', () =>
         PluginCommAPI.getLassoElements(),
       );
@@ -994,7 +1069,7 @@ export function createHost(
         return null;
       }
       // Tracked so they are freed with the others.
-      return wrap(held).map(e => e.uuid);
+      return wrap(held).map(e => ({uuid: e.uuid, layerNum: e.layerNum}));
     },
 
     async lassoBox() {
@@ -1054,13 +1129,14 @@ export function createHost(
       const old = fetched;
       fetched = [];
       const keep = new Set<string>(pendingUuids);
-      for (const kept of [erased, restoring]) {
-        for (const e of kept?.elements ?? []) {
-          keep.add(e.uuid);
-        }
+      for (const e of [...elementsOf(erased), ...elementsOf(restoring)]) {
+        keep.add(e.uuid);
       }
       for (const u of undone) {
         keep.add(u.element.uuid);
+      }
+      if (redoing) {
+        keep.add(redoing.uuid);
       }
       recycleAll(old.filter(e => !keep.has(e.uuid)));
     },

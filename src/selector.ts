@@ -74,25 +74,41 @@ export interface Host {
    * includes the stroke that was just drawn (the SDK reads the saved file).
    */
   getPageElements(path: string, page: number): Promise<PageElement[]>;
+  /**
+   * Did the save of the last getPageElements fail (its read may then be
+   * of an old file)? Optional: hosts without it are taken as saving.
+   */
+  lastSaveFailed?(): boolean;
   /** Make sure FILE:READ and FILE:WRITE are granted, asking if needed. */
   ensureFileAccess(): Promise<boolean>;
-  /** Resolve once the pen is off the screen, or after `maxWaitMs`. */
-  waitForPenUp(maxWaitMs: number): Promise<void>;
+  /**
+   * Resolve true once the pen is off the screen, false if it is still down
+   * after `maxWaitMs`.
+   */
+  waitForPenUp(maxWaitMs: number): Promise<boolean>;
   deleteElements(
     numsInPage: number[],
     page: number,
     layer: number,
   ): Promise<boolean>;
-  /** Keep these elements around so the erase can be undone later. */
+  /**
+   * Keep these elements around so the erase can be undone later. A new
+   * erase replaces the last one; with `sameErase` they are this layer's
+   * strokes of the erase being remembered (replacing what it had for it).
+   */
   rememberErased(
     path: string,
     page: number,
     layer: number,
     elements: PageElement[],
+    sameErase?: boolean,
   ): void;
   lassoRect(rect: Box): Promise<boolean>;
-  /** The uuids of the elements the lasso holds, or null if none/unreadable. */
-  lassoUuids(): Promise<string[] | null>;
+  /**
+   * The uuids and layers of the elements the lasso holds, or null if
+   * none/unreadable.
+   */
+  lassoSelection(): Promise<{uuid: string; layerNum: number}[] | null>;
   /** The lasso box, or null if there is none. */
   lassoBox(): Promise<Box | null>;
   /**
@@ -109,6 +125,8 @@ export interface Host {
     layer: number,
     element: PageElement,
   ): void;
+  /** Drop a stroke kept by keepUndone that is still on the page after all. */
+  forgetUndone(element: PageElement): void;
   /** Put the last undone stroke back. Returns a message. */
   redo(): Promise<string>;
   /** Forget the undone strokes (new writing makes redo meaningless). */
@@ -979,44 +997,74 @@ async function eraseNextToMark(
   if (host.penDownCount() !== downsAtStart) {
     return {kind: 'ignored', reason: 'kept writing after the wave'};
   }
-  const removed = await deleteVerified(ctx, [...erased, stroke]);
+  // Remembered as soon as deleted (the wave itself is not restored).
+  const remember = eraseMemory(host, path, page);
+  const removed = await deleteVerified(ctx, [...erased, stroke], gone =>
+    remember(
+      stroke.layerNum,
+      gone.filter(e => e !== stroke),
+    ),
+  );
   if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not erase strokes'};
   }
   await repaint(ctx, removed.fileClean);
-  // After the reload: recycling the previous erase's strokes never goes
-  // ahead of it.
-  host.rememberErased(path, page, stroke.layerNum, erased);
   return {kind: 'erased', count: erased.length};
+}
+
+/**
+ * One erase, remembered for Restore layer by layer as it is deleted: the
+ * first call starts it, later ones add or replace a layer's strokes.
+ */
+function eraseMemory(
+  host: Host,
+  path: string,
+  page: number,
+): (layer: number, gone: PageElement[]) => void {
+  let started = false;
+  return (layer, gone) => {
+    host.rememberErased(path, page, layer, gone, started);
+    started = true;
+  };
 }
 
 /**
  * Delete page elements, newest first so removing one never shifts the
  * numbers of the others, then re-read the page and delete again whatever
  * is still there (matched by point count and first point, as numbers may
- * have changed).
+ * have changed). Deleting again goes by element number, so it needs a
+ * second read agreeing with the first, the same page still showing and
+ * saves that went through: a stale read would remove neighbouring ink.
+ *
+ * `remember` gets the deleted elements right after the first delete, so a
+ * later failure or throw never loses them, and again, fewer, when the last
+ * read shows some still on the page (restoring those would duplicate them).
  */
 async function deleteVerified(
   ctx: Context,
   targets: PageElement[],
+  remember: (gone: PageElement[]) => void,
 ): Promise<{deleted: boolean; fileClean: boolean}> {
   const {host, path, page, stroke} = ctx;
   // Point count and first point: the targets' outlines are already read.
   const targetOutlines = await Promise.all(targets.map(e => e.outline()));
-  const wanted = new Set(
-    targetOutlines.map(pts => `${pts.length}@${fmt(pts[0])}`),
+  const targetSignatures = targetOutlines.map(
+    pts => `${pts.length}@${fmt(pts[0])}`,
   );
+  const wanted = new Set(targetSignatures);
   const wantedCounts = new Set(targetOutlines.map(pts => pts.length));
   const descending = (els: PageElement[]) =>
     els.map(e => e.numInPage).sort((a, b) => b - a);
 
-  // Saves the page, then reads the file: what is still there. Only the
-  // point counts are read, and the first point of strokes whose count
-  // matches a target's.
+  // Saves the page, then reads the file: what is still there (with its
+  // numbers and signatures, to compare two reads), and whether the save
+  // went through. Only the point counts are read, and the first point of
+  // strokes whose count matches a target's.
   const stillThere = async () => {
     const same = (await host.getPageElements(path, page)).filter(
       e => e.type === STROKE && e.layerNum === stroke.layerNum,
     );
+    const saved = !(host.lastSaveFailed?.() ?? false);
     const counts = await Promise.all(same.map(pointCountOf));
     let firstReads = 0;
     const signatures = await Promise.all(
@@ -1035,26 +1083,77 @@ async function deleteVerified(
     ctx.trace(
       `verify: ${same.length} strokes sized, ${firstReads} first points read`,
     );
-    return same.filter((_, i) => {
+    const left: PageElement[] = [];
+    const leftSignatures: string[] = [];
+    same.forEach((e, i) => {
       const signature = signatures[i];
-      return signature !== null && wanted.has(signature);
+      if (signature !== null && wanted.has(signature)) {
+        left.push(e);
+        leftSignatures.push(signature);
+      }
     });
+    const keys = left
+      .map((e, i) => `${e.numInPage}:${leftSignatures[i]}`)
+      .sort()
+      .join(' ');
+    return {left, leftSignatures, keys, saved};
+  };
+  // What a read shows still there is not restorable (no duplicates).
+  const settle = (read: {leftSignatures: string[]}) => {
+    const still = new Set(read.leftSignatures);
+    const gone = targets.filter((_, i) => !still.has(targetSignatures[i]));
+    if (gone.length < targets.length) {
+      remember(gone);
+    }
+  };
+  const unverified = (why: string) => {
+    ctx.trace(`not deleted again: ${why}`);
+    return {deleted: true, fileClean: false};
   };
 
+  if (ctx.isCancelled()) {
+    ctx.trace('not deleted: given up on');
+    return {deleted: false, fileClean: false};
+  }
   if (
     !(await host.deleteElements(descending(targets), page, stroke.layerNum))
   ) {
     return {deleted: false, fileClean: false};
   }
-  let left = await stillThere();
-  if (left.length > 0) {
-    ctx.trace(`still on page after delete: ${left.length}, deleting again`);
-    if (!(await host.deleteElements(descending(left), page, stroke.layerNum))) {
-      return {deleted: false, fileClean: false};
-    }
-    left = await stillThere();
+  remember(targets);
+  const first = await stillThere();
+  if (!first.saved) {
+    return unverified('the save before the check failed');
   }
-  return {deleted: true, fileClean: left.length === 0};
+  if (first.left.length === 0) {
+    return {deleted: true, fileClean: true};
+  }
+  ctx.trace(`still on page after delete: ${first.left.length}, reading again`);
+  const second = await stillThere();
+  if (!second.saved) {
+    return unverified('the save before the check failed');
+  }
+  if (second.keys !== first.keys) {
+    settle(second);
+    return unverified('the two reads differ');
+  }
+  if (ctx.isCancelled() || !(await stillShowing(ctx))) {
+    settle(second);
+    return unverified('page changed');
+  }
+  ctx.trace(`still on page: ${second.left.length}, deleting again`);
+  if (
+    !(await host.deleteElements(descending(second.left), page, stroke.layerNum))
+  ) {
+    settle(second);
+    return unverified('the delete failed');
+  }
+  const last = await stillThere();
+  if (!last.saved) {
+    return {deleted: true, fileClean: false};
+  }
+  settle(last);
+  return {deleted: true, fileClean: last.left.length === 0};
 }
 
 /**
@@ -1067,6 +1166,9 @@ async function removeAndSelect(
   name: string,
 ): Promise<Outcome | null> {
   const {host, page, stroke} = ctx;
+  if (ctx.isCancelled()) {
+    return {kind: 'ignored', reason: 'page changed'};
+  }
   if (!(await host.deleteElements([stroke.numInPage], page, stroke.layerNum))) {
     return {kind: 'failed', reason: `could not remove the ${name}`};
   }
@@ -1076,6 +1178,14 @@ async function removeAndSelect(
     return {kind: 'failed', reason: 'could not create lasso selection'};
   }
   return null;
+}
+
+/** Options of the lasso toolbar and floating button edits. */
+export interface EditOptions {
+  trace?: (line: string) => void;
+  screenRefresh?: boolean;
+  /** Checked right before each change to the page. */
+  isCancelled?: () => boolean;
 }
 
 /**
@@ -1088,9 +1198,10 @@ async function removeAndSelect(
 export async function deleteSelection(
   host: Host,
   config: SelectorConfig,
-  options: {trace?: (line: string) => void; screenRefresh?: boolean} = {},
+  options: EditOptions = {},
 ): Promise<Outcome> {
   const trace = options.trace ?? (() => {});
+  const isCancelled = options.isCancelled ?? (() => false);
   const [path, page] = await Promise.all([
     host.getCurrentFilePath(),
     host.getCurrentPageNum(),
@@ -1101,7 +1212,10 @@ export async function deleteSelection(
   if (!(await host.ensureFileAccess())) {
     return {kind: 'failed', reason: 'file access not granted'};
   }
-  const [held, box] = await Promise.all([host.lassoUuids(), host.lassoBox()]);
+  const [held, box] = await Promise.all([
+    host.lassoSelection(),
+    host.lassoBox(),
+  ]);
   if (!held?.length && !box) {
     return {kind: 'ignored', reason: 'nothing selected'};
   }
@@ -1109,15 +1223,28 @@ export async function deleteSelection(
   trace(`lasso closed: ${await host.setLassoBox('remove')}`);
 
   const elements = await host.getPageElements(path, page);
-  const wanted = new Set(held ?? []);
+  const wanted = new Set((held ?? []).map(h => h.uuid));
   let targets = elements.filter(e => wanted.has(e.uuid));
   trace(`found on the page by id: ${targets.length}`);
-  if (targets.length < wanted.size && box) {
+  if (targets.length > 0 && targets.length < wanted.size) {
+    // Only what was found is deleted: the box would take unselected ink
+    // (it is the freeform lasso's bounding rectangle).
+    trace(`not found by id: ${wanted.size - targets.length}, left alone`);
+  }
+  if (targets.length === 0 && box) {
     // Ids may differ between the lasso and the page read: take what sits
-    // in the lasso box instead.
+    // in the lasso box instead, on the selection's layers when known.
+    const layers = new Set(
+      (held ?? [])
+        .map(h => h.layerNum)
+        .filter(n => typeof n === 'number' && n >= 0),
+    );
     const outlines = await outlinesOf(elements);
-    targets = elements.filter((_, i) => {
+    targets = elements.filter((e, i) => {
       if (outlines[i].length === 0) {
+        return false;
+      }
+      if (layers.size > 0 && !layers.has(e.layerNum)) {
         return false;
       }
       const b = boundingBox(outlines[i]);
@@ -1127,7 +1254,11 @@ export async function deleteSelection(
         cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom
       );
     });
-    trace(`found in the lasso box instead: ${targets.length}`);
+    trace(
+      `found in the lasso box instead: ${targets.length}${
+        layers.size > 0 ? ` (layer ${[...layers].join(', ')})` : ''
+      }`,
+    );
   }
   if (targets.length === 0) {
     return {kind: 'failed', reason: 'selected strokes not found on the page'};
@@ -1138,32 +1269,38 @@ export async function deleteSelection(
   for (const e of targets) {
     layers.set(e.layerNum, [...(layers.get(e.layerNum) ?? []), e]);
   }
+  const contextFor = (group: PageElement[]): Context => ({
+    host,
+    config,
+    path,
+    page,
+    stroke: group[0],
+    others: [],
+    isCancelled,
+    trace,
+    screenRefresh: options.screenRefresh ?? true,
+  });
+  // The lasso is already closed: pen up, same page, then delete.
+  const blocked = await checkBeforeEdit(contextFor(targets), false);
+  if (blocked) {
+    return blocked;
+  }
   let clean = true;
   let ctx: Context | null = null;
-  let largest: PageElement[] = [];
+  // Every layer's strokes, remembered as each is deleted: Restore puts
+  // all of them back.
+  const remember = eraseMemory(host, path, page);
   for (const group of layers.values()) {
-    ctx = {
-      host,
-      config,
-      path,
-      page,
-      stroke: group[0],
-      others: [],
-      isCancelled: () => false,
-      trace,
-      screenRefresh: options.screenRefresh ?? true,
-    };
-    const removed = await deleteVerified(ctx, group);
+    ctx = contextFor(group);
+    const removed = await deleteVerified(ctx, group, gone =>
+      remember(group[0].layerNum, gone),
+    );
     if (!removed.deleted) {
       return {kind: 'failed', reason: 'could not delete the selection'};
     }
     clean = clean && removed.fileClean;
-    if (group.length > largest.length) {
-      largest = group;
-    }
   }
   await repaint(ctx!, clean);
-  host.rememberErased(path, page, largest[0].layerNum, largest);
   return {kind: 'erased', count: targets.length};
 }
 
@@ -1175,9 +1312,10 @@ export async function deleteSelection(
 export async function undoLastStroke(
   host: Host,
   config: SelectorConfig,
-  options: {trace?: (line: string) => void; screenRefresh?: boolean} = {},
+  options: EditOptions = {},
 ): Promise<Outcome> {
   const trace = options.trace ?? (() => {});
+  const isCancelled = options.isCancelled ?? (() => false);
   const [path, page] = await Promise.all([
     host.getCurrentFilePath(),
     host.getCurrentPageNum(),
@@ -1204,15 +1342,25 @@ export async function undoLastStroke(
     page,
     stroke: newest,
     others: [],
-    isCancelled: () => false,
+    isCancelled,
     trace,
     screenRefresh: options.screenRefresh ?? true,
   };
-  const removed = await deleteVerified(ctx, [newest]);
+  // The lasso was reset before the read: pen up, same page, then delete.
+  const blocked = await checkBeforeEdit(ctx, false);
+  if (blocked) {
+    return blocked;
+  }
+  // Kept for redo as soon as it is deleted; dropped again if it turns out
+  // to be still on the page.
+  const removed = await deleteVerified(ctx, [newest], gone =>
+    gone.length > 0
+      ? host.keepUndone(path, page, newest.layerNum, newest)
+      : host.forgetUndone(newest),
+  );
   if (!removed.deleted) {
     return {kind: 'failed', reason: 'could not undo the stroke'};
   }
-  host.keepUndone(path, page, newest.layerNum, newest);
   await repaint(ctx, removed.fileClean);
   return {kind: 'erased', count: 1};
 }
@@ -1228,6 +1376,10 @@ async function repaint(ctx: Context, fileClean: boolean): Promise<void> {
   }
   if (!fileClean) {
     ctx.trace('not refreshed: the saved file still had the deleted strokes');
+    return;
+  }
+  if (ctx.isCancelled()) {
+    ctx.trace('not refreshed: given up on');
     return;
   }
   ctx.trace(
@@ -1272,27 +1424,42 @@ function firstPointOf(e: PageElement): Promise<Pt | undefined> {
   return e.firstPoint ? e.firstPoint() : e.outline().then(pts => pts[0]);
 }
 
-/** Last checks before the page is modified; returns why not to, if any. */
-async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
+/** Is the page being edited still the one showing? */
+async function stillShowing(ctx: Context): Promise<boolean> {
+  const [path, page] = await Promise.all([
+    ctx.host.getCurrentFilePath(),
+    ctx.host.getCurrentPageNum(),
+  ]);
+  return path === ctx.path && page === ctx.page;
+}
+
+/**
+ * Last checks before the page is modified; returns why not to, if any.
+ * `resetLasso` false: the flow already reset it before reading the page.
+ */
+async function checkBeforeEdit(
+  ctx: Context,
+  resetLasso = true,
+): Promise<Outcome | null> {
   // Editing the page while the pen is down drops the stroke being written.
-  await ctx.host.waitForPenUp(ctx.config.penUpWaitMs);
+  if (!(await ctx.host.waitForPenUp(ctx.config.penUpWaitMs))) {
+    return {kind: 'ignored', reason: 'pen still down'};
+  }
   // The user may have turned the page or switched file while we worked, or
   // the caller may have given up on this stroke (timeout).
   if (ctx.isCancelled()) {
     return {kind: 'ignored', reason: 'page changed'};
   }
-  const [path, page] = await Promise.all([
-    ctx.host.getCurrentFilePath(),
-    ctx.host.getCurrentPageNum(),
-  ]);
-  if (path !== ctx.path || page !== ctx.page) {
+  if (!(await stillShowing(ctx))) {
     return {kind: 'ignored', reason: 'page changed'};
   }
   // Seen on device: strokes deleted with the device's delete from a
   // plugin-made selection come back at the plugin's next edit, unless the
   // stock lasso tool was used in between. The same reset first prevents it
   // (confirmed on device).
-  ctx.trace(`lasso reset: ${await ctx.host.resetLasso()}`);
+  if (resetLasso) {
+    ctx.trace(`lasso reset: ${await ctx.host.resetLasso()}`);
+  }
   return null;
 }
 
