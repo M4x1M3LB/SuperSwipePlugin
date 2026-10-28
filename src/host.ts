@@ -619,6 +619,9 @@ export function createHost(
   let erased: ErasedStrokes | null = null;
   // The erase being restored: still needed by insertPageElements.
   let restoring: ErasedStrokes | null = null;
+  // The stroke being redone: out of `undone`, still needed by
+  // insertPageElements.
+  let redoing: Element | null = null;
 
   let trace: Trace = () => {};
   let timings = new Timings();
@@ -965,20 +968,33 @@ export function createHost(
       if (!last) {
         return 'Nothing to redo.';
       }
-      if ((await this.getCurrentFilePath()) !== last.path) {
-        undone.push(last);
-        return 'Open the note the stroke was undone in, then try again.';
+      redoing = last.element;
+      let done = false;
+      try {
+        if ((await this.getCurrentFilePath()) !== last.path) {
+          return 'Open the note the stroke was undone in, then try again.';
+        }
+        const ok = await call<boolean>('insertPageElements', () =>
+          PluginCommAPI.insertPageElements(
+            [last.element],
+            last.page,
+            last.layer,
+          ),
+        );
+        if (ok !== true) {
+          fileCallFailed('insertPageElements');
+          return 'Could not redo the stroke.';
+        }
+        done = true;
+        redoing = null;
+        recycleAll([last.element]);
+        return 'Redone.';
+      } finally {
+        if (!done) {
+          redoing = null;
+          undone.push(last); // also on a throw: it stays redoable
+        }
       }
-      const ok = await call<boolean>('insertPageElements', () =>
-        PluginCommAPI.insertPageElements([last.element], last.page, last.layer),
-      );
-      if (ok !== true) {
-        undone.push(last);
-        fileCallFailed('insertPageElements');
-        return 'Could not redo the stroke.';
-      }
-      recycleAll([last.element]);
-      return 'Redone.';
     },
 
     clearRedo() {
@@ -1078,6 +1094,9 @@ export function createHost(
       }
       for (const u of undone) {
         keep.add(u.element.uuid);
+      }
+      if (redoing) {
+        keep.add(redoing.uuid);
       }
       recycleAll(old.filter(e => !keep.has(e.uuid)));
     },
