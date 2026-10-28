@@ -47,7 +47,7 @@ merges each into `claude/inspiring-goldberg-xr0tmt` after re-running gates.
 | 2 Queue & lock | C5-plugin + B4 (one edit lock: strokes queue while undo/redo/LasEr Delete runs; those refuse while a stroke is busy; LasEr Delete releases), B1 (stale abandoned flows stop blocking release), B9 (listener throws cannot leave `busy` set) | `src/plugin.ts`, `src/status.ts`, `__tests__/plugin.test.ts`, `__tests__/status.test.ts` | sonnet | [x] merged |
 | 3 Loop speed | A1 (y-bucketed edge index for containment, identical results) | `src/geometry.ts`, `__tests__/geometry.test.ts` | sonnet | [x] merged |
 | 4 Native & build | C7 (tap = short press, little movement, no CANCEL), C8 (current-module tap routing, `invalidate()` cleanup, cancel pending in `remove()`, assign view after `addView`), C9 (build fails hard; clear stale `app.npk`), B5 (`armed` flag: no hide() when nothing shown) | `android/**/LaserOverlayModule.java`, `buildPlugin.sh`, `src/floating.ts`, `__tests__/floating.test.ts` | sonnet | [x] merged (Java compiled against stubs only) |
-| 5 Read savings (after 1) | A2 (outline reads stop at first refusal, newest first), A3 (start reads in parallel with page-copy outline), B7-page-size (cache per path#page) | `src/selector.ts`, `src/host.ts` | sonnet | [ ] |
+| 5 Read savings (after 1) | A2 (outline reads stop at first refusal, newest first), A3 (start reads in parallel with page-copy outline), B7-page-size (cache per path#page) | `src/selector.ts`, `src/host.ts` | sonnet | [x] merged (A3 skipped: it would read every stroke when the page copy is no loop) |
 
 Rejected / deferred, with reason:
 - A4, A5: microseconds on real handwriting; not worth the code.
