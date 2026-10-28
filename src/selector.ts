@@ -76,8 +76,11 @@ export interface Host {
   getPageElements(path: string, page: number): Promise<PageElement[]>;
   /** Make sure FILE:READ and FILE:WRITE are granted, asking if needed. */
   ensureFileAccess(): Promise<boolean>;
-  /** Resolve once the pen is off the screen, or after `maxWaitMs`. */
-  waitForPenUp(maxWaitMs: number): Promise<void>;
+  /**
+   * Resolve true once the pen is off the screen, false if it is still down
+   * after `maxWaitMs`.
+   */
+  waitForPenUp(maxWaitMs: number): Promise<boolean>;
   deleteElements(
     numsInPage: number[],
     page: number,
@@ -1275,7 +1278,9 @@ function firstPointOf(e: PageElement): Promise<Pt | undefined> {
 /** Last checks before the page is modified; returns why not to, if any. */
 async function checkBeforeEdit(ctx: Context): Promise<Outcome | null> {
   // Editing the page while the pen is down drops the stroke being written.
-  await ctx.host.waitForPenUp(ctx.config.penUpWaitMs);
+  if (!(await ctx.host.waitForPenUp(ctx.config.penUpWaitMs))) {
+    return {kind: 'ignored', reason: 'pen still down'};
+  }
   // The user may have turned the page or switched file while we worked, or
   // the caller may have given up on this stroke (timeout).
   if (ctx.isCancelled()) {

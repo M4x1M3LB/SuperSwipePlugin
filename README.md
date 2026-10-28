@@ -25,7 +25,8 @@ All gestures:
 - Work with the ink pens (fineliner, pressure pen, calligraphy). The marker
   is ignored, so highlighter circles and lines stay ink.
 - Wait for the pen to lift before changing the page, and cancel if you turn
-  the page or switch files in the meantime.
+  the page or switch files in the meantime. A gesture is left as ink when
+  the pen stays down for more than 5 seconds (a long stroke right after it).
 - Only work in NOTE files (not PDFs/documents).
 - Can each be turned on or off from the plugin screen.
 - Are found even when quickly followed by more writing: the device delivers

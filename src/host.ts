@@ -153,8 +153,11 @@ export class PenTracker {
   private downs = 0;
   private lastDownAt = 0;
   private lastEventAt = 0;
-  private waiters: {since: number; maxWaitMs: number; resolve: () => void}[] =
-    [];
+  private waiters: {
+    since: number;
+    maxWaitMs: number;
+    resolve: (up: boolean) => void;
+  }[] = [];
   private listener: ((event: MotionEvent | null | undefined) => void) | null =
     null;
 
@@ -176,6 +179,15 @@ export class PenTracker {
         this.listener(event);
       } catch {}
     }
+    this.track(event);
+    // Any event wakes the waiters, hover and finger ones too: a pen whose
+    // UP was missed is then found silent (stale), and a wait still times out.
+    if (this.waiters.length > 0) {
+      this.wakeWaiters(Date.now());
+    }
+  }
+
+  private track(event: MotionEvent | null | undefined): void {
     if (event?.toolType !== TOOL_PEN) {
       return;
     }
@@ -195,12 +207,9 @@ export class PenTracker {
     if (action === ACTION_DOWN) {
       this.down = true;
       this.downs++;
-      this.lastDownAt = Date.now();
+      this.lastDownAt = now;
     } else if (action === ACTION_UP || action === ACTION_CANCEL) {
       this.down = false;
-    }
-    if (this.waiters.length > 0) {
-      this.wakeWaiters(now);
     }
   }
 
@@ -209,13 +218,17 @@ export class PenTracker {
   }
 
   private wakeWaiters(now: number): void {
-    this.waiters = this.waiters.filter(w => {
-      if (this.isUp(now) || now - w.since > w.maxWaitMs) {
-        w.resolve();
-        return false;
+    // Compacted in place: called on every pen event while waiting.
+    const up = this.isUp(now);
+    let kept = 0;
+    for (const w of this.waiters) {
+      if (up || now - w.since > w.maxWaitMs) {
+        w.resolve(up);
+      } else {
+        this.waiters[kept++] = w;
       }
-      return true;
-    });
+    }
+    this.waiters.length = kept;
   }
 
   /** How many times the pen has touched the screen so far. */
@@ -232,10 +245,14 @@ export class PenTracker {
     return this.isUp(Date.now()) && this.lastDownAt < time;
   }
 
-  waitForUp(maxWaitMs: number): Promise<void> {
+  /**
+   * Resolves true once the pen is off the screen, false if it is still down
+   * after `maxWaitMs` (checked on the next motion event).
+   */
+  waitForUp(maxWaitMs: number): Promise<boolean> {
     const now = Date.now();
     if (this.isUp(now)) {
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     return new Promise(resolve => {
       this.waiters.push({since: now, maxWaitMs, resolve});

@@ -100,7 +100,7 @@ function fakeHost(
     getPageSize: async () => ({width: 1404, height: 1872}),
     getPageElements: async () => current,
     ensureFileAccess: async () => true,
-    waitForPenUp: async () => {},
+    waitForPenUp: async () => true,
     deleteElements: async nums => {
       host.calls.push('delete');
       host.deleted.push(nums);
@@ -327,6 +327,7 @@ describe('handlePenUp', () => {
     const host = fakeHost([el(word(480, 500)), loop], {
       waitForPenUp: async () => {
         order.push('wait');
+        return true;
       },
     });
     const realDelete = host.deleteElements;
@@ -336,6 +337,20 @@ describe('handlePenUp', () => {
     };
     await handlePenUp([loop], host, DEFAULT_CONFIG);
     expect(order).toEqual(['wait', 'delete']);
+  });
+
+  it('leaves the page alone while the pen stays down (a long stroke)', async () => {
+    const loop = el(ellipse(520, 500, 200, 120));
+    const host = fakeHost([el(word(480, 500)), loop], {
+      waitForPenUp: async () => false, // still down after the wait
+    });
+
+    expect(await handlePenUp([loop], host, DEFAULT_CONFIG)).toEqual({
+      kind: 'ignored',
+      reason: 'pen still down',
+    });
+    expect(host.deleted).toEqual([]);
+    expect(host.lassoed).toEqual([]);
   });
 
   it('reports a failure when the lasso cannot be created', async () => {
@@ -691,6 +706,7 @@ describe('handlePenUp: margin wave to erase', () => {
     host.penDownCount = () => downs;
     host.waitForPenUp = async () => {
       downs++; // the next letter starts while the page is read
+      return true;
     };
 
     expect(await handlePenUp([mark], host, DEFAULT_CONFIG)).toEqual({
@@ -1050,6 +1066,7 @@ describe('handlePenUp: margin bar to select a block', () => {
     host2.penDownCount = () => downs;
     host2.waitForPenUp = async () => {
       downs++; // the pen touched the screen again meanwhile
+      return true;
     };
     const mark2 = (await host2.getPageElements('', 3)).slice(-1)[0];
     expect(await handlePenUp([mark2], host2, DEFAULT_CONFIG)).toEqual({
