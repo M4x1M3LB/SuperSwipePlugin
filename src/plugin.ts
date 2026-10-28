@@ -238,6 +238,8 @@ export function startGestures(): void {
           ? undoLastStroke(device, DEFAULT_CONFIG, {
               trace,
               screenRefresh: status.gestures().screenRefresh ?? true,
+              // Reported as stuck and taken over: no more page edits.
+              isCancelled: () => tapping !== current,
             })
           : device
               .redo()
@@ -307,6 +309,7 @@ export function startGestures(): void {
       outcome = await deleteSelectionFlow(device, DEFAULT_CONFIG, {
         trace,
         screenRefresh: status.gestures().screenRefresh ?? true,
+        isCancelled: () => tapping !== current,
       });
     } catch (e) {
       outcome = {
