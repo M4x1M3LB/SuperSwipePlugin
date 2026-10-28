@@ -9,7 +9,6 @@ const mockHasPermission = jest.fn();
 const mockRequestPermission = jest.fn();
 const mockSave = jest.fn();
 const mockGetElements = jest.fn();
-const mockPageSize = jest.fn();
 
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
@@ -24,7 +23,6 @@ jest.mock('sn-plugin-lib', () => ({
   },
   PluginFileAPI: {
     getElements: (...args: unknown[]) => mockGetElements(...args),
-    getPageSize: (...args: unknown[]) => mockPageSize(...args),
   },
   PluginNoteAPI: {saveCurrentNote: () => mockSave()},
   NativeUIUtils: {},
@@ -575,42 +573,5 @@ describe('direct point reads', () => {
     expect(lines).toEqual([
       'points: SDK accessor (fallback: no native module)',
     ]);
-  });
-});
-
-describe('getPageSize', () => {
-  const size = {width: 1404, height: 1872};
-
-  it('reads a page once, per path and page, and again after a failure', async () => {
-    const host = createHost(new PenTracker(), {pointApi: null});
-    mockPageSize.mockResolvedValueOnce({success: false});
-    expect(await host.getPageSize('/a.note', 1)).toBeNull();
-    mockPageSize.mockResolvedValue(ok(size));
-    expect(await host.getPageSize('/a.note', 1)).toEqual(size);
-    expect(await host.getPageSize('/a.note', 1)).toEqual(size);
-    expect(mockPageSize).toHaveBeenCalledTimes(2);
-    await host.getPageSize('/a.note', 2);
-    expect(mockPageSize).toHaveBeenCalledTimes(3);
-  });
-
-  it('forgets the sizes when the file path changes', async () => {
-    const host = createHost(new PenTracker(), {pointApi: null});
-    mockPageSize.mockResolvedValue(ok(size));
-    await host.getPageSize('/a.note', 1);
-    await host.getPageSize('/b.note', 1);
-    await host.getPageSize('/a.note', 1);
-    expect(mockPageSize).toHaveBeenCalledTimes(3);
-  });
-
-  it('keeps at most 8 pages', async () => {
-    const host = createHost(new PenTracker(), {pointApi: null});
-    mockPageSize.mockResolvedValue(ok(size));
-    for (let p = 0; p < 9; p++) {
-      await host.getPageSize('/a.note', p);
-    }
-    await host.getPageSize('/a.note', 8); // kept
-    expect(mockPageSize).toHaveBeenCalledTimes(9);
-    await host.getPageSize('/a.note', 0); // the oldest was dropped
-    expect(mockPageSize).toHaveBeenCalledTimes(10);
   });
 });
