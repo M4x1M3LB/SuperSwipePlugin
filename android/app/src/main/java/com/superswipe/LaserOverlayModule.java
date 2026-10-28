@@ -19,6 +19,7 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.widget.ImageView;
 
@@ -38,14 +39,23 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
  */
 public class LaserOverlayModule extends ReactContextBaseJavaModule {
     private static final long TAP_WINDOW_MS = 350;
+    /** A finger tap is a touch that lifts within this long, without moving. */
+    private static final long TAP_MAX_PRESS_MS = 400;
 
     private final Handler main = new Handler(Looper.getMainLooper());
 
     // Static: the plugin host process outlives a reloaded JS context, so a
     // window from a previous run is found and reused instead of orphaned.
+    // Its touch listener reaches whichever module is live through "current".
     private static WindowManager wm;
     private static ImageView button;
     private static WindowManager.LayoutParams params;
+    private static LaserOverlayModule current;
+
+    // The touch being judged as a tap (main looper only).
+    private static boolean tapCandidate = false;
+    private static float tapDownX;
+    private static float tapDownY;
 
     /** A delayed show, cancelled when the pen goes down again. */
     private Runnable pendingShow = null;
@@ -60,11 +70,50 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
 
     public LaserOverlayModule(ReactApplicationContext context) {
         super(context);
+        current = this;
     }
 
     @Override
     public String getName() {
         return "LaserOverlay";
+    }
+
+    /** Called from the overlay's touch listener, on the main looper. */
+    private void registerTap() {
+        taps++;
+        main.removeCallbacks(fireTaps);
+        main.postDelayed(fireTaps, TAP_WINDOW_MS);
+    }
+
+    /** The JS context is gone: take the window and pending work with it. */
+    @Override
+    public void invalidate() {
+        super.invalidate();
+        main.post(() -> {
+            main.removeCallbacks(fireTaps);
+            taps = 0;
+            if (pendingShow != null) {
+                main.removeCallbacks(pendingShow);
+                pendingShow = null;
+            }
+            // A newer module may already own the window: leave it alone.
+            if (current == this) {
+                current = null;
+                removeButton();
+            }
+        });
+    }
+
+    private static void removeButton() {
+        try {
+            if (button != null && wm != null) {
+                wm.removeView(button);
+            }
+        } catch (Exception ignored) {
+        }
+        button = null;
+        params = null;
+        wm = null;
     }
 
     private void emit(String event, WritableMap payload) {
@@ -167,13 +216,13 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void remove(Promise promise) {
         main.post(() -> {
-            try {
-                if (button != null && wm != null) {
-                    wm.removeView(button);
-                }
-            } catch (Exception ignored) {
+            if (pendingShow != null) {
+                main.removeCallbacks(pendingShow);
+                pendingShow = null;
             }
-            button = null;
+            main.removeCallbacks(fireTaps);
+            taps = 0;
+            removeButton();
             promise.resolve(true);
         });
     }
@@ -192,17 +241,17 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
             return;
         }
         Context ctx = getReactApplicationContext();
-        wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+        WindowManager manager = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
         int size = dp(48);
-        params = new WindowManager.LayoutParams(
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 size, size, type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.START;
+        lp.gravity = Gravity.TOP | Gravity.START;
 
         ImageView view = new ImageView(ctx);
         view.setImageBitmap(undoIcon(dp(30)));
@@ -217,15 +266,51 @@ public class LaserOverlayModule extends ReactContextBaseJavaModule {
             if (ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS) {
                 return false;
             }
-            if (ev.getActionMasked() == MotionEvent.ACTION_UP) {
-                taps++;
-                main.removeCallbacks(fireTaps);
-                main.postDelayed(fireTaps, TAP_WINDOW_MS);
+            // A tap is one finger down and up within TAP_MAX_PRESS_MS, moving
+            // less than the touch slop. A resting palm, a drag or a cancelled
+            // touch is not one.
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    tapCandidate = true;
+                    tapDownX = ev.getRawX();
+                    tapDownY = ev.getRawY();
+                    break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                case MotionEvent.ACTION_CANCEL:
+                    tapCandidate = false;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    if (tapCandidate && movedPastSlop(v, ev)) {
+                        tapCandidate = false;
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                    boolean tap = tapCandidate
+                            && ev.getEventTime() - ev.getDownTime() <= TAP_MAX_PRESS_MS
+                            && !movedPastSlop(v, ev);
+                    tapCandidate = false;
+                    LaserOverlayModule m = current;
+                    if (tap && m != null) {
+                        m.registerTap();
+                    }
+                    break;
+                default:
+                    break;
             }
             return true;
         });
+        // Only now that it is on screen does it become the shared window.
+        manager.addView(view, lp);
+        wm = manager;
+        params = lp;
         button = view;
-        wm.addView(button, params);
+    }
+
+    private static boolean movedPastSlop(View v, MotionEvent ev) {
+        int slop = ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
+        float dx = ev.getRawX() - tapDownX;
+        float dy = ev.getRawY() - tapDownY;
+        return dx * dx + dy * dy > (float) slop * slop;
     }
 
     /** A curved "undo" arrow, drawn so no resources are needed in the host. */

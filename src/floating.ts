@@ -71,6 +71,11 @@ export class FloatingButton {
   private hiddenByUser = false;
   /** A four-finger touch already toggled; wait for all fingers up. */
   private fingersCounted = false;
+  /**
+   * A show was requested (pending or elapsed, the native side times it), so
+   * the button may be visible: only then does a pen DOWN need to hide it.
+   */
+  private armed = false;
 
   constructor(private enabled: () => boolean, onTaps: (count: number) => void) {
     DeviceEventEmitter.addListener(
@@ -91,7 +96,7 @@ export class FloatingButton {
     if (!this.enabled()) {
       if (this.box) {
         this.box = null;
-        native.hide().catch(() => {});
+        this.hideNative();
       }
       return;
     }
@@ -101,7 +106,9 @@ export class FloatingButton {
       const {x, y} = event;
       if (action === ACTION_DOWN) {
         this.box = {left: x, top: y, right: x, bottom: y};
-        native.hide().catch(() => {});
+        if (this.armed) {
+          this.hideNative();
+        }
       } else if (action === ACTION_MOVE && this.box) {
         const b = this.box;
         b.left = Math.min(b.left, x);
@@ -120,7 +127,7 @@ export class FloatingButton {
         this.fingersCounted = true;
         this.hiddenByUser = !this.hiddenByUser;
         if (this.hiddenByUser) {
-          native.hide().catch(() => {});
+          this.hideNative();
         } else {
           this.show(0);
         }
@@ -133,6 +140,12 @@ export class FloatingButton {
   /** Three taps: hide until a four-finger tap. */
   hideByUser(): void {
     this.hiddenByUser = true;
+    this.hideNative();
+  }
+
+  /** Tell the native side to hide and cancel any pending show. */
+  private hideNative(): void {
+    this.armed = false;
     native?.hide().catch(() => {});
   }
 
@@ -144,6 +157,7 @@ export class FloatingButton {
     if (!native || this.hiddenByUser || !this.box) {
       return;
     }
+    this.armed = true;
     native
       .showLeftOf(this.box.left, this.box.top, GAP_DP, delayMs)
       .catch(() => {});

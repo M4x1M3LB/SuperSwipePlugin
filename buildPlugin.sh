@@ -684,6 +684,9 @@ main() {
     local gen_dir
     gen_dir="$(ensure_build_generated_dir "$project_root")"
 
+    # A package from an earlier build must never leak into this one.
+    rm -f "$gen_dir/app.npk"
+
     build_react_native_bundle "$project_root" "$PACKAGE_NAME" "$gen_dir"
 
     local root_cfg="$project_root/PluginConfig.json"
@@ -714,16 +717,23 @@ main() {
 
     if [[ "$should_build_native" -eq 0 ]]; then
         if build_android_apk "$project_root" "$gen_cfg"; then
-            copy_apk_and_update_config "$project_root" "$gen_dir" "$gen_cfg" || true
+            if ! copy_apk_and_update_config "$project_root" "$gen_dir" "$gen_cfg"; then
+                write_color_output "Copying the APK failed; not producing a package" "Red"
+                exit 1
+            fi
 
             local autolink_pkgs
             autolink_pkgs="$(get_react_packages_from_autolinking_source "$project_root" "com.facebook.react.shell.MainReactPackage|com.ratta.supernote.note.plugincore.PluginPackage|com.ratta.supernote.pluginlib.PluginPackage" || true)"
 
             local all_pkgs
             all_pkgs="$(printf "%s\n%s\n" "$project_react_pkgs" "$autolink_pkgs" | awk 'NF' | sort -u)"
-            update_plugin_config_packages "$project_root" "$gen_dir" "$all_pkgs"
+            if ! update_plugin_config_packages "$project_root" "$gen_dir" "$all_pkgs"; then
+                write_color_output "Updating reactPackages failed; not producing a package" "Red"
+                exit 1
+            fi
         else
-            write_color_output "APK build failed" "Red"
+            write_color_output "APK build failed; not producing a package" "Red"
+            exit 1
         fi
     else
         write_color_output "Build conditions not met; skipping native build and reactPackages update" "Yellow"

@@ -36,12 +36,40 @@ describe('FloatingButton', () => {
       () => {},
     );
     button.onMotion(pen(0, 100, 300));
-    expect(mockNative.hide).toHaveBeenCalledTimes(1);
     button.onMotion(pen(2, 400, 280));
     button.onMotion(pen(2, 250, 340));
     expect(mockNative.showLeftOf).not.toHaveBeenCalled();
     button.onMotion(pen(1, 250, 340));
     expect(mockNative.showLeftOf).toHaveBeenCalledWith(100, 280, 60, 3000);
+    // The next stroke cancels the pending show.
+    expect(mockNative.hide).not.toHaveBeenCalled();
+    button.onMotion(pen(0, 100, 300));
+    expect(mockNative.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls hide on pen down only when a show may be pending or visible', () => {
+    const button = new FloatingButton(
+      () => true,
+      () => {},
+    );
+    // Nothing shown yet: plain strokes cost no hide, one show per pen up.
+    for (let i = 0; i < 3; i++) {
+      button.onMotion(pen(0, 100, 300));
+      button.onMotion(pen(2, 150, 320));
+      if (i === 0) {
+        expect(mockNative.hide).not.toHaveBeenCalled();
+      }
+      button.onMotion(pen(1, 150, 320));
+    }
+    expect(mockNative.showLeftOf).toHaveBeenCalledTimes(3);
+    // Two hides in a row would be one too many: only the first DOWN after
+    // a show hides.
+    expect(mockNative.hide).toHaveBeenCalledTimes(2);
+
+    button.onMotion(pen(0, 100, 300));
+    button.onMotion(pen(3, 100, 300)); // cancelled: shows again
+    expect(mockNative.hide).toHaveBeenCalledTimes(3);
+    expect(mockNative.showLeftOf).toHaveBeenCalledTimes(4);
   });
 
   it('passes finger taps on, and stays hidden after three taps', () => {
@@ -73,7 +101,7 @@ describe('FloatingButton', () => {
     button.onMotion(fingers(517, 3));
     button.onMotion(fingers(773, 4)); // fourth finger down: hide
     button.onMotion(fingers(773, 4)); // same touch: no second toggle
-    expect(mockNative.hide).toHaveBeenCalledTimes(2);
+    expect(mockNative.hide).toHaveBeenCalledTimes(1);
     button.onMotion(fingers(1, 1)); // all up
 
     button.onMotion(fingers(773, 4)); // again: show by the last stroke

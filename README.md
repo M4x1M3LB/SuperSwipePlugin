@@ -151,7 +151,7 @@ Floating undo/redo button:
 - It hides as soon as the pen touches the screen, and comes back once the
   pen has stayed up for 3 seconds (timed natively), well to the left of
   the last stroke (60 dp), level with its top.
-- Tap it with a **finger** (the pen writes through it into the note): once
+- Tap it with a **finger** (a quick touch, under 0.4 s, that does not slide; the pen writes through it into the note): once
   to undo the last stroke, twice to redo, three times to hide it. A
   **four-finger tap** anywhere shows or hides it again.
 - Undo removes the newest stroke on the page the way the margin wave
